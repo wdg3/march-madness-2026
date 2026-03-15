@@ -1,0 +1,7 @@
+data/
+output/
+AutogluonModels/
+__pycache__/
+*.pyc
+.DS_Store
+venv/

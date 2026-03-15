@@ -1,0 +1,6 @@
+autogluon>=1.2.0
+catboost
+torch
+lightgbm
+pandas>=2.2.3
+numpy<2
