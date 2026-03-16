@@ -3,7 +3,8 @@
 import pandas as pd
 from config import (
     DATA_DIR, OUTPUT_DIR, TRAIN_SEASONS_END, VALIDATION_SEASON,
-    PREDICTION_SEASON, AG_HYPERPARAMETERS, ENABLED_FEATURES,
+    PREDICTION_SEASON, AG_PRESETS, AG_TIME_LIMIT, AG_NUM_BAG_FOLDS,
+    AG_NUM_STACK_LEVELS, ENABLED_FEATURES,
 )
 from pipeline import build_team_features, build_matchups, build_prediction_pairs
 from training import train
@@ -28,7 +29,13 @@ train_data = train_data.drop(columns=drop_cols)
 val_data = val_data.drop(columns=drop_cols)
 
 # 5. Train
-predictor = train(train_data, val_data, AG_HYPERPARAMETERS)
+predictor = train(
+    train_data, val_data,
+    presets=AG_PRESETS,
+    time_limit=AG_TIME_LIMIT,
+    num_bag_folds=AG_NUM_BAG_FOLDS,
+    num_stack_levels=AG_NUM_STACK_LEVELS,
+)
 
 # 6. Generate submission
 pred_pairs = build_prediction_pairs(team_features, PREDICTION_SEASON)

@@ -9,23 +9,10 @@ VALIDATION_SEASON = 2025  # validate on this season
 PREDICTION_SEASON = 2026
 
 # AutoGluon
-AG_HYPERPARAMETERS = {
-    "NN_TORCH": {},
-    "CAT": {},
-    "FASTAI": {},
-    "RF": [
-        {"criterion": "gini", "ag_args": {"name_suffix": "Gini", "problem_types": ["binary", "multiclass"]}},
-        {"criterion": "entropy", "ag_args": {"name_suffix": "Entr", "problem_types": ["binary", "multiclass"]}},
-    ],
-    "XT": [
-        {"criterion": "gini", "ag_args": {"name_suffix": "Gini", "problem_types": ["binary", "multiclass"]}},
-        {"criterion": "entropy", "ag_args": {"name_suffix": "Entr", "problem_types": ["binary", "multiclass"]}},
-    ],
-    "KNN": [
-        {"weights": "uniform", "ag_args": {"name_suffix": "Unif"}},
-        {"weights": "distance", "ag_args": {"name_suffix": "Dist"}},
-    ],
-}
+AG_PRESETS = "best_quality"
+AG_TIME_LIMIT = 3600  # 1 hour; generous for ~3000 rows
+AG_NUM_BAG_FOLDS = 8
+AG_NUM_STACK_LEVELS = 1
 
 # Feature sources to enable
 ENABLED_FEATURES = [
