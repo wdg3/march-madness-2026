@@ -17,8 +17,8 @@ from features.travel import TravelFeatures
 from features.external_stubs import (
     VegasOddsFeatures,
     RosterContinuityFeatures,
-    APPollTrajectoryFeatures,
 )
+from features.kenpom import KenPomFeatures, APPollFeatures, PublicPicksFeatures
 
 REGISTRY = {
     "massey": MasseyFeatures,
@@ -39,5 +39,7 @@ REGISTRY = {
     # External sources (not enabled by default — require data fetching)
     "vegas": VegasOddsFeatures,
     "roster": RosterContinuityFeatures,
-    "ap_poll": APPollTrajectoryFeatures,
+    "kenpom": KenPomFeatures,
+    "ap_poll": APPollFeatures,
+    "public_picks": PublicPicksFeatures,
 }

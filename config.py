@@ -31,8 +31,10 @@ ENABLED_FEATURES = [
     "conf_tourney",
     "location",
     "travel",
-    # External sources (uncomment when data is available):
+    # External sources (require data in data/external/):
+    "kenpom",
+    "ap_poll",
+    "public_picks",
     # "vegas",
     # "roster",
-    # "ap_poll",
 ]

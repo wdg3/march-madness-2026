@@ -84,36 +84,5 @@ class RosterContinuityFeatures(ExternalFeatureSource):
         return pd.read_csv(csv_path)
 
 
-class APPollTrajectoryFeatures(ExternalFeatureSource):
-    """AP/Coaches poll ranking trajectory over the season.
 
-    Data source ideas:
-    - sports-reference.com/cbb/polls/
-    - collegepollarchive.com
-
-    Features to build:
-    - Preseason rank vs final rank (trajectory direction)
-    - Max rank achieved during season
-    - Number of weeks ranked
-    - Rank volatility (std dev of weekly rank)
-    - Late-season rank trend (last 4 weeks slope)
-    """
-
-    def name(self) -> str:
-        return "ap_poll"
-
-    def fetch(self, data_dir: Path) -> None:
-        raise NotImplementedError(
-            "AP Poll fetcher not yet implemented. "
-            "Place a CSV with columns [Season, TeamID, ...] "
-            "at data/external/ap_poll/polls.csv"
-        )
-
-    def build(self, data_dir: Path) -> pd.DataFrame:
-        csv_path = self.external_data_dir(data_dir) / "polls.csv"
-        if not csv_path.exists():
-            raise FileNotFoundError(
-                f"AP Poll data not found at {csv_path}. "
-                "Run with an AP Poll data source or manually place the file."
-            )
-        return pd.read_csv(csv_path)
+# APPollTrajectoryFeatures has been replaced by APPollFeatures in features/kenpom.py
