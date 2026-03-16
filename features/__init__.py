@@ -13,7 +13,7 @@ from features.regular_season_advanced import (
 from features.coach import CoachFeatures
 from features.conf_tourney import ConfTourneyFeatures
 from features.location import LocationFeatures
-from features.travel import TravelFeatures
+# Note: travel is a matchup-level feature handled in pipeline.py, not here
 from features.external_stubs import (
     VegasOddsFeatures,
     RosterContinuityFeatures,
@@ -35,7 +35,7 @@ REGISTRY = {
     "coach": CoachFeatures,
     "conf_tourney": ConfTourneyFeatures,
     "location": LocationFeatures,
-    "travel": TravelFeatures,
+    # "travel" is a matchup-level feature, not team-level — handled in pipeline.py
     # External sources (not enabled by default — require data fetching)
     "vegas": VegasOddsFeatures,
     "roster": RosterContinuityFeatures,

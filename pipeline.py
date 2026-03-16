@@ -2,6 +2,7 @@ from pathlib import Path
 import pandas as pd
 from features import REGISTRY
 from features.base import ExternalFeatureSource
+from features.travel import ensure_geocoded, add_travel_to_matchups, add_travel_to_predictions
 
 
 def build_team_features(data_dir: Path, enabled: list[str], force_fetch: bool = False) -> pd.DataFrame:
@@ -9,7 +10,10 @@ def build_team_features(data_dir: Path, enabled: list[str], force_fetch: bool = 
     print("Building team features...")
     result = None
 
-    for name in enabled:
+    # Filter out "travel" — it's now a matchup-level feature, not team-level
+    team_sources = [name for name in enabled if name != "travel"]
+
+    for name in team_sources:
         source = REGISTRY[name]()
         if isinstance(source, ExternalFeatureSource):
             source.ensure_fetched(data_dir, force=force_fetch)
@@ -23,7 +27,8 @@ def build_team_features(data_dir: Path, enabled: list[str], force_fetch: bool = 
     return result
 
 
-def build_matchups(team_features: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
+def build_matchups(team_features: pd.DataFrame, games: pd.DataFrame,
+                   data_dir: Path = None, travel: bool = False) -> pd.DataFrame:
     """Build pairwise matchup training data from historical tournament games.
 
     For each game, creates two rows:
@@ -66,11 +71,17 @@ def build_matchups(team_features: pd.DataFrame, games: pd.DataFrame) -> pd.DataF
         + ["Label"]
     )
     result = pd.DataFrame(rows, columns=col_names)
+
+    # Add matchup-level travel features
+    if travel and data_dir is not None:
+        result = add_travel_to_matchups(result, games, data_dir)
+
     print(f"  Matchup data shape: {result.shape}")
     return result
 
 
-def build_prediction_pairs(team_features: pd.DataFrame, season: int) -> pd.DataFrame:
+def build_prediction_pairs(team_features: pd.DataFrame, season: int,
+                           data_dir: Path = None, travel: bool = False) -> pd.DataFrame:
     """Build all pairwise matchups for prediction in a given season.
 
     Only includes teams that have a seed (tournament teams).
@@ -94,5 +105,10 @@ def build_prediction_pairs(team_features: pd.DataFrame, season: int) -> pd.DataF
         + [f"{c}_B" for c in feat_cols]
     )
     result = pd.DataFrame(rows, columns=col_names)
+
+    # Add matchup-level travel features
+    if travel and data_dir is not None:
+        result = add_travel_to_predictions(result, data_dir, season)
+
     print(f"  Prediction pairs shape: {result.shape}")
     return result

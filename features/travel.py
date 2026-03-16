@@ -1,9 +1,14 @@
-"""Travel distance features using geocoded school and venue locations.
+"""Matchup-level travel distance features.
 
-Uses OpenStreetMap Nominatim for geocoding (free, no API key).
-Computes average historical tournament travel distance per team as a
-proxy for geographic advantage — teams from major metro areas near
-common tournament venues travel less on average.
+For each potential game between two teams, computes the distance each team
+would travel to the game venue. This is a matchup-level feature (not team-level)
+because the venue depends on WHERE in the bracket two teams would meet.
+
+For training data: we know the exact city from MGameCities.csv.
+For prediction data: we determine the venue from the bracket structure
+(seeds -> slot -> round -> venue city).
+
+Uses cached geocoded coordinates from OpenStreetMap Nominatim.
 """
 
 import json
@@ -13,8 +18,6 @@ from pathlib import Path
 
 import pandas as pd
 import numpy as np
-
-from features.base import ExternalFeatureSource
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 
@@ -46,164 +49,342 @@ def geocode_nominatim(query, session):
     return None
 
 
-class TravelFeatures(ExternalFeatureSource):
-    """Average travel distance to tournament venues — closer = more fan support."""
+def ensure_geocoded(data_dir: Path) -> None:
+    """Geocode all schools and venue cities if not already cached."""
+    ext_dir = data_dir / "external" / "travel"
+    ext_dir.mkdir(parents=True, exist_ok=True)
 
-    def name(self) -> str:
-        return "travel"
+    school_cache_path = ext_dir / "school_coords.json"
+    city_cache_path = ext_dir / "city_coords.json"
 
-    def fetch(self, data_dir: Path) -> None:
-        """Geocode all schools and tournament venue cities."""
-        import requests
+    if school_cache_path.exists() and city_cache_path.exists():
+        return  # Already geocoded
 
-        ext_dir = self.external_data_dir(data_dir)
-        session = requests.Session()
+    import requests
+    session = requests.Session()
 
-        # 1. Geocode schools
-        school_cache_path = ext_dir / "school_coords.json"
-        if school_cache_path.exists():
-            school_coords = json.loads(school_cache_path.read_text())
+    # 1. Geocode schools
+    if school_cache_path.exists():
+        school_coords = json.loads(school_cache_path.read_text())
+    else:
+        school_coords = {}
+
+    teams = pd.read_csv(data_dir / "MTeams.csv")
+    team_queries = dict(zip(teams["TeamID"], teams["TeamName"]))
+    to_geocode = {
+        str(tid): name for tid, name in team_queries.items()
+        if str(tid) not in school_coords
+    }
+
+    if to_geocode:
+        print(f"    Geocoding {len(to_geocode)} schools...")
+        for tid, name in to_geocode.items():
+            query = f"{name} university basketball"
+            result = geocode_nominatim(query, session)
+            if result is None:
+                result = geocode_nominatim(f"{name} university", session)
+            if result:
+                school_coords[tid] = {"lat": result[0], "lng": result[1]}
+            time.sleep(1.1)
+        school_cache_path.write_text(json.dumps(school_coords, indent=2))
+        print(f"    Geocoded {len(school_coords)} schools total")
+
+    # 2. Geocode venue cities
+    if city_cache_path.exists():
+        city_coords = json.loads(city_cache_path.read_text())
+    else:
+        city_coords = {}
+
+    cities = pd.read_csv(data_dir / "Cities.csv")
+    to_geocode_cities = {
+        str(row["CityID"]): f"{row['City']}, {row['State']}"
+        for _, row in cities.iterrows()
+        if str(row["CityID"]) not in city_coords
+    }
+
+    if to_geocode_cities:
+        print(f"    Geocoding {len(to_geocode_cities)} cities...")
+        for cid, name in to_geocode_cities.items():
+            result = geocode_nominatim(name, session)
+            if result:
+                city_coords[cid] = {"lat": result[0], "lng": result[1]}
+            time.sleep(1.1)
+        city_cache_path.write_text(json.dumps(city_coords, indent=2))
+        print(f"    Geocoded {len(city_coords)} cities total")
+
+
+def _load_coords(data_dir: Path):
+    """Load cached school and city coordinates."""
+    ext_dir = data_dir / "external" / "travel"
+    school_coords = json.loads((ext_dir / "school_coords.json").read_text())
+    city_coords = json.loads((ext_dir / "city_coords.json").read_text())
+    return school_coords, city_coords
+
+
+def _team_dist_to_city(team_id, city_lat, city_lng, school_coords):
+    """Compute distance from a team's school to a city. Returns NaN if unknown."""
+    tid = str(int(team_id))
+    if tid not in school_coords:
+        return np.nan
+    return haversine(
+        school_coords[tid]["lat"], school_coords[tid]["lng"],
+        city_lat, city_lng,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Training: add travel features to historical matchups
+# ---------------------------------------------------------------------------
+
+def add_travel_to_matchups(matchups: pd.DataFrame, games: pd.DataFrame,
+                           data_dir: Path) -> pd.DataFrame:
+    """Add travel_dist_A, travel_dist_B, travel_advantage to training matchups.
+
+    Uses MGameCities to look up the actual city for each historical game,
+    then computes each team's distance to that venue.
+    """
+    print("  Adding travel distance features to matchups...")
+    school_coords, city_coords = _load_coords(data_dir)
+
+    # Build game -> city mapping from MGameCities
+    game_cities = pd.read_csv(data_dir / "MGameCities.csv")
+    ncaa = game_cities[game_cities["CRType"] == "NCAA"]
+    cities_df = pd.read_csv(data_dir / "Cities.csv")
+
+    # Create lookup: (Season, WTeamID, LTeamID) -> CityID
+    game_city_map = {}
+    for _, row in ncaa.iterrows():
+        key = (row["Season"], row["WTeamID"], row["LTeamID"])
+        game_city_map[key] = row["CityID"]
+
+    dist_a_list = []
+    dist_b_list = []
+
+    for _, mrow in matchups.iterrows():
+        s = mrow["Season"]
+        team_a = mrow["TeamID_A"]
+        team_b = mrow["TeamID_B"]
+        label = mrow["Label"]
+
+        # In our matchup construction, Label=1 means A=winner, B=loser
+        # Label=0 means A=loser, B=winner
+        if label == 1:
+            key = (s, int(team_a), int(team_b))
         else:
-            school_coords = {}
+            key = (s, int(team_b), int(team_a))
 
-        teams = pd.read_csv(data_dir / "MTeams.csv")
-        spellings = pd.read_csv(data_dir / "MTeamSpellings.csv", encoding="latin-1")
-        # Get the most common spelling for each team as a search query
-        team_queries = dict(zip(teams["TeamID"], teams["TeamName"]))
-
-        to_geocode = {
-            str(tid): name for tid, name in team_queries.items()
-            if str(tid) not in school_coords
-        }
-
-        if to_geocode:
-            print(f"    Geocoding {len(to_geocode)} schools...")
-            for tid, name in to_geocode.items():
-                query = f"{name} university basketball"
-                result = geocode_nominatim(query, session)
-                if result is None:
-                    # Try just the name + state
-                    result = geocode_nominatim(f"{name} university", session)
-                if result:
-                    school_coords[tid] = {"lat": result[0], "lng": result[1]}
-                time.sleep(1.1)  # Nominatim rate limit: 1 req/sec
-
-            school_cache_path.write_text(json.dumps(school_coords, indent=2))
-            print(f"    Geocoded {len(school_coords)} schools total")
-
-        # 2. Geocode tournament venue cities
-        city_cache_path = ext_dir / "city_coords.json"
-        if city_cache_path.exists():
-            city_coords = json.loads(city_cache_path.read_text())
-        else:
-            city_coords = {}
-
-        cities = pd.read_csv(data_dir / "Cities.csv")
-        to_geocode_cities = {
-            str(row["CityID"]): f"{row['City']}, {row['State']}"
-            for _, row in cities.iterrows()
-            if str(row["CityID"]) not in city_coords
-        }
-
-        if to_geocode_cities:
-            print(f"    Geocoding {len(to_geocode_cities)} cities...")
-            for cid, name in to_geocode_cities.items():
-                result = geocode_nominatim(name, session)
-                if result:
-                    city_coords[cid] = {"lat": result[0], "lng": result[1]}
-                time.sleep(1.1)
-
-            city_cache_path.write_text(json.dumps(city_coords, indent=2))
-            print(f"    Geocoded {len(city_coords)} cities total")
-
-    def build(self, data_dir: Path) -> pd.DataFrame:
-        print("  Building travel distance features...")
-        ext_dir = self.external_data_dir(data_dir)
-
-        school_path = ext_dir / "school_coords.json"
-        city_path = ext_dir / "city_coords.json"
-
-        if not school_path.exists() or not city_path.exists():
-            raise FileNotFoundError(
-                "Travel data not fetched. Run with travel feature enabled "
-                "and internet access to geocode locations."
-            )
-
-        school_coords = json.loads(school_path.read_text())
-        city_coords = json.loads(city_path.read_text())
-
-        # Load tournament game locations
-        game_cities = pd.read_csv(data_dir / "MGameCities.csv")
-        ncaa_games = game_cities[game_cities["CRType"] == "NCAA"]
-
-        # Compute travel distance for each team in each tournament game
-        distances = []
-        for _, row in ncaa_games.iterrows():
-            city_id = str(row["CityID"])
-            if city_id not in city_coords:
+        city_id = game_city_map.get(key)
+        if city_id is not None:
+            cid = str(city_id)
+            if cid in city_coords:
+                clat = city_coords[cid]["lat"]
+                clng = city_coords[cid]["lng"]
+                dist_a_list.append(_team_dist_to_city(team_a, clat, clng, school_coords))
+                dist_b_list.append(_team_dist_to_city(team_b, clat, clng, school_coords))
                 continue
 
-            city_lat = city_coords[city_id]["lat"]
-            city_lng = city_coords[city_id]["lng"]
+        dist_a_list.append(np.nan)
+        dist_b_list.append(np.nan)
 
-            for team_id in [row["WTeamID"], row["LTeamID"]]:
-                tid = str(team_id)
-                if tid not in school_coords:
-                    continue
+    matchups = matchups.copy()
+    matchups["travel_dist_A"] = dist_a_list
+    matchups["travel_dist_B"] = dist_b_list
+    matchups["travel_advantage"] = matchups["travel_dist_B"] - matchups["travel_dist_A"]
 
-                dist = haversine(
-                    school_coords[tid]["lat"], school_coords[tid]["lng"],
-                    city_lat, city_lng,
-                )
-                distances.append({
-                    "Season": row["Season"],
-                    "TeamID": team_id,
-                    "Distance": dist,
-                })
+    filled = matchups["travel_dist_A"].notna().sum()
+    total = len(matchups)
+    print(f"    Travel features: {filled}/{total} matchups have distance data")
+    return matchups
 
-        if not distances:
-            # Return empty frame with correct columns
-            return pd.DataFrame(columns=[
-                "Season", "TeamID", "travel_avg_dist", "travel_min_dist",
-                "travel_max_dist",
-            ])
 
-        dist_df = pd.DataFrame(distances)
+# ---------------------------------------------------------------------------
+# Prediction: determine venue from bracket structure
+# ---------------------------------------------------------------------------
 
-        # Aggregate: for each team, compute average distance across all their
-        # historical tournament games (over all prior seasons) as a proxy for
-        # how centrally located they are relative to typical tournament venues
-        all_hist = dist_df.groupby("TeamID").agg(
-            hist_avg_dist=("Distance", "mean"),
-        ).reset_index()
+# 2026 venue mapping: (region_letter, seed_pod) -> city name for R1/R2
+# Pod groupings: [1,16,8,9], [5,12,4,13], [6,11,3,14], [7,10,2,15]
+# Region letters: W=East, X=South, Y=Midwest, Z=West
 
-        # Also compute per-season tournament travel (for seasons where available)
-        per_season = dist_df.groupby(["Season", "TeamID"]).agg(
-            travel_avg_dist=("Distance", "mean"),
-            travel_min_dist=("Distance", "min"),
-            travel_max_dist=("Distance", "max"),
-        ).reset_index()
+VENUE_CONFIGS = {
+    2026: {
+        "first_four": "Dayton, OH",
+        "final_four": "Indianapolis, IN",
+        "regionals": {  # Sweet 16 / Elite 8
+            "W": "Washington, DC",   # East
+            "X": "Houston, TX",      # South
+            "Y": "Chicago, IL",      # Midwest
+            "Z": "San Jose, CA",     # West
+        },
+        "pods": {  # R1/R2 sites: (region, pod) -> city
+            # Pod A = seeds 1,16,8,9; Pod B = 5,12,4,13; Pod C = 6,11,3,14; Pod D = 7,10,2,15
+            ("W", "A"): "Greenville, SC",     # East 1/16/8/9
+            ("W", "B"): "San Diego, CA",      # East 5/12/4/13
+            ("W", "C"): "Buffalo, NY",        # East 6/11/3/14
+            ("W", "D"): "Philadelphia, PA",   # East 7/10/2/15
+            ("X", "A"): "Tampa, FL",          # South 1/16/8/9
+            ("X", "B"): "Oklahoma City, OK",  # South 5/12/4/13
+            ("X", "C"): "Greenville, SC",     # South 6/11/3/14
+            ("X", "D"): "Oklahoma City, OK",  # South 7/10/2/15
+            ("Y", "A"): "Buffalo, NY",        # Midwest 1/16/8/9
+            ("Y", "B"): "Tampa, FL",          # Midwest 5/12/4/13
+            ("Y", "C"): "Philadelphia, PA",   # Midwest 6/11/3/14
+            ("Y", "D"): "St. Louis, MO",      # Midwest 7/10/2/15
+            ("Z", "A"): "San Diego, CA",      # West 1/16/8/9
+            ("Z", "B"): "Portland, OR",       # West 5/12/4/13
+            ("Z", "C"): "Portland, OR",       # West 6/11/3/14
+            ("Z", "D"): "St. Louis, MO",      # West 7/10/2/15
+        },
+    }
+}
 
-        # For teams/seasons without tournament game location data,
-        # use their historical average
-        # Build a full frame of all team-seasons
-        all_teams = pd.read_csv(data_dir / "MTeams.csv")
-        seasons = pd.read_csv(data_dir / "MSeasons.csv")
-        # We only need seasons where teams exist
-        team_seasons = pd.read_csv(data_dir / "MRegularSeasonCompactResults.csv")
-        all_ts = pd.concat([
-            team_seasons[["Season", "WTeamID"]].rename(columns={"WTeamID": "TeamID"}),
-            team_seasons[["Season", "LTeamID"]].rename(columns={"LTeamID": "TeamID"}),
-        ]).drop_duplicates()
+# Seed number -> pod letter
+SEED_TO_POD = {
+    1: "A", 16: "A", 8: "A", 9: "A",
+    5: "B", 12: "B", 4: "B", 13: "B",
+    6: "C", 11: "C", 3: "C", 14: "C",
+    7: "D", 10: "D", 2: "D", 15: "D",
+}
 
-        result = all_ts.merge(per_season, on=["Season", "TeamID"], how="left")
-        result = result.merge(all_hist, on="TeamID", how="left")
+# Which pods are in each bracket half (for determining Sweet 16 vs Elite 8)
+# Top half: pods A + B (seeds 1,16,8,9,5,12,4,13)
+# Bottom half: pods C + D (seeds 6,11,3,14,7,10,2,15)
+TOP_HALF_PODS = {"A", "B"}
+BOTTOM_HALF_PODS = {"C", "D"}
 
-        # Fill missing per-season travel with historical average
-        for col in ["travel_avg_dist", "travel_min_dist", "travel_max_dist"]:
-            result[col] = result[col].fillna(result["hist_avg_dist"])
 
-        result.rename(columns={"hist_avg_dist": "travel_hist_avg_dist"}, inplace=True)
+def _parse_seed(seed_str):
+    """Parse seed string like 'W01' or 'X16a' -> (region_letter, seed_number)."""
+    region = seed_str[0]
+    seed_num = int(seed_str[1:3])
+    return region, seed_num
 
-        return result[["Season", "TeamID", "travel_avg_dist", "travel_min_dist",
-                        "travel_max_dist", "travel_hist_avg_dist"]]
+
+def _get_venue_for_matchup(seed_a, seed_b, venue_config):
+    """Determine venue city for a matchup given both teams' seed strings.
+
+    Returns city string like 'Indianapolis, IN' or None if can't determine.
+    """
+    region_a, num_a = _parse_seed(seed_a)
+    region_b, num_b = _parse_seed(seed_b)
+
+    pod_a = SEED_TO_POD.get(num_a)
+    pod_b = SEED_TO_POD.get(num_b)
+
+    if region_a != region_b:
+        # Cross-region: Final Four / Championship
+        return venue_config["final_four"]
+
+    # Same region
+    region = region_a
+
+    if pod_a == pod_b:
+        # Same pod: R2 game at the pod's R1/R2 site
+        return venue_config["pods"].get((region, pod_a))
+
+    # Same region, different pods
+    half_a = "top" if pod_a in TOP_HALF_PODS else "bottom"
+    half_b = "top" if pod_b in TOP_HALF_PODS else "bottom"
+
+    # Whether same half or different half, it's at the regional site (Sweet 16 or Elite 8)
+    return venue_config["regionals"].get(region)
+
+
+def _geocode_venue_city(city_str, city_coords_by_name):
+    """Look up coordinates for a venue city string like 'Indianapolis, IN'."""
+    return city_coords_by_name.get(city_str)
+
+
+def _build_city_name_coords(data_dir: Path, city_coords: dict) -> dict:
+    """Build city name -> (lat, lng) mapping for venue cities."""
+    cities_df = pd.read_csv(data_dir / "Cities.csv")
+    result = {}
+    for _, row in cities_df.iterrows():
+        cid = str(row["CityID"])
+        if cid in city_coords:
+            name = f"{row['City']}, {row['State']}"
+            result[name] = (city_coords[cid]["lat"], city_coords[cid]["lng"])
+    return result
+
+
+# Hardcoded coordinates for 2026 venue cities (in case Cities.csv doesn't cover them)
+VENUE_COORDS = {
+    "Dayton, OH": (39.7589, -84.1916),
+    "Greenville, SC": (34.8526, -82.3940),
+    "San Diego, CA": (32.7157, -117.1611),
+    "Buffalo, NY": (42.8864, -78.8784),
+    "Philadelphia, PA": (39.9526, -75.1652),
+    "Tampa, FL": (27.9506, -82.4572),
+    "Oklahoma City, OK": (35.4676, -97.5164),
+    "Portland, OR": (45.5152, -122.6784),
+    "St. Louis, MO": (38.6270, -90.1994),
+    "Washington, DC": (38.9072, -77.0369),
+    "Houston, TX": (29.7604, -95.3698),
+    "Chicago, IL": (41.8781, -87.6298),
+    "San Jose, CA": (37.3382, -121.8863),
+    "Indianapolis, IN": (39.7684, -86.1581),
+}
+
+
+def add_travel_to_predictions(pairs: pd.DataFrame, data_dir: Path,
+                               season: int) -> pd.DataFrame:
+    """Add travel features to prediction pairs using bracket structure.
+
+    For each pair, determines where the game would be played based on
+    both teams' seeds, then computes distances.
+    """
+    print(f"  Adding travel distance features to {season} predictions...")
+
+    if season not in VENUE_CONFIGS:
+        print(f"    Warning: No venue config for {season}, skipping travel features")
+        pairs = pairs.copy()
+        pairs["travel_dist_A"] = np.nan
+        pairs["travel_dist_B"] = np.nan
+        pairs["travel_advantage"] = np.nan
+        return pairs
+
+    venue_config = VENUE_CONFIGS[season]
+    school_coords, _ = _load_coords(data_dir)
+
+    # Build team -> seed mapping
+    seeds_df = pd.read_csv(data_dir / "MNCAATourneySeeds.csv")
+    seeds_season = seeds_df[seeds_df["Season"] == season]
+    team_to_seed = dict(zip(seeds_season["TeamID"], seeds_season["Seed"]))
+
+    dist_a_list = []
+    dist_b_list = []
+
+    for _, row in pairs.iterrows():
+        team_a = int(row["TeamID_A"])
+        team_b = int(row["TeamID_B"])
+
+        seed_a = team_to_seed.get(team_a)
+        seed_b = team_to_seed.get(team_b)
+
+        if seed_a is None or seed_b is None:
+            dist_a_list.append(np.nan)
+            dist_b_list.append(np.nan)
+            continue
+
+        # Strip play-in suffixes for pod determination
+        clean_a = seed_a[:3]
+        clean_b = seed_b[:3]
+
+        city = _get_venue_for_matchup(clean_a, clean_b, venue_config)
+        if city is None or city not in VENUE_COORDS:
+            dist_a_list.append(np.nan)
+            dist_b_list.append(np.nan)
+            continue
+
+        clat, clng = VENUE_COORDS[city]
+        dist_a_list.append(_team_dist_to_city(team_a, clat, clng, school_coords))
+        dist_b_list.append(_team_dist_to_city(team_b, clat, clng, school_coords))
+
+    pairs = pairs.copy()
+    pairs["travel_dist_A"] = dist_a_list
+    pairs["travel_dist_B"] = dist_b_list
+    pairs["travel_advantage"] = pairs["travel_dist_B"] - pairs["travel_dist_A"]
+
+    filled = pairs["travel_dist_A"].notna().sum()
+    total = len(pairs)
+    print(f"    Travel features: {filled}/{total} pairs have distance data")
+    return pairs

@@ -7,17 +7,23 @@ from config import (
     AG_NUM_STACK_LEVELS, ENABLED_FEATURES,
 )
 from pipeline import build_team_features, build_matchups, build_prediction_pairs
+from features.travel import ensure_geocoded
 from training import train
 from submission import generate_submission
 
 # 1. Build features
 team_features = build_team_features(DATA_DIR, ENABLED_FEATURES)
 
+# 1b. Ensure travel data is geocoded (matchup-level feature)
+use_travel = "travel" in ENABLED_FEATURES
+if use_travel:
+    ensure_geocoded(DATA_DIR)
+
 # 2. Load tournament results
 tourney = pd.read_csv(DATA_DIR / "MNCAATourneyCompactResults.csv")
 
 # 3. Build pairwise training data
-matchups = build_matchups(team_features, tourney)
+matchups = build_matchups(team_features, tourney, data_dir=DATA_DIR, travel=use_travel)
 
 # 4. Split train/validation
 train_data = matchups[matchups["Season"] < TRAIN_SEASONS_END].copy()
@@ -38,7 +44,7 @@ predictor = train(
 )
 
 # 6. Generate submission
-pred_pairs = build_prediction_pairs(team_features, PREDICTION_SEASON)
+pred_pairs = build_prediction_pairs(team_features, PREDICTION_SEASON, data_dir=DATA_DIR, travel=use_travel)
 sample_sub = pd.read_csv(DATA_DIR / "SampleSubmissionStage2.csv")
 generate_submission(predictor, pred_pairs, sample_sub, OUTPUT_DIR / "submission.csv")
 
