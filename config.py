@@ -10,7 +10,7 @@ PREDICTION_SEASON = 2026
 
 # AutoGluon
 AG_PRESETS = "best_quality"
-AG_TIME_LIMIT = 3600  # 1 hour; generous for ~3000 rows
+AG_TIME_LIMIT = 10800  # 3 hours
 AG_NUM_BAG_FOLDS = 8
 AG_NUM_STACK_LEVELS = 1
 
