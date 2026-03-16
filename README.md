@@ -38,6 +38,18 @@ python main.py
 
 Output: `output/submission.csv` in Kaggle submission format.
 
+### Bracket Simulation
+
+Once you have a submission CSV, run the Monte Carlo bracket simulator to fill out a bracket:
+
+```bash
+python simulate.py [--n-sims 10000] [--submission output/submission.csv] [--season 2026]
+```
+
+This simulates the full tournament thousands of times using the model's pairwise probabilities, then picks the team that advances from each bracket slot most often. Unlike naive "always pick the favorite" approaches, this properly accounts for path probability — a team's chance of reaching the Final Four depends on the probability of winning *every game along the way*, not just individual matchups.
+
+Output: `output/bracket.csv` and a formatted bracket printed to the console showing the pick and top contenders for each slot.
+
 ## Adding New Feature Sources
 
 1. Create a new file in `features/` implementing `FeatureSource`:
