@@ -21,4 +21,10 @@ ENABLED_FEATURES = [
     "conference",
     "regular_season",
     "tourney_history",
+    "rank_disagree",
+    "seed_rank_delta",
+    "close_games",
+    "scoring_variance",
+    "momentum",
+    "tempo",
 ]
