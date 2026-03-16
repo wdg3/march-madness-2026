@@ -27,4 +27,12 @@ ENABLED_FEATURES = [
     "scoring_variance",
     "momentum",
     "tempo",
+    "coach",
+    "conf_tourney",
+    "location",
+    "travel",
+    # External sources (uncomment when data is available):
+    # "vegas",
+    # "roster",
+    # "ap_poll",
 ]

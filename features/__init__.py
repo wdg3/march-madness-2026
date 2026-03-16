@@ -10,6 +10,15 @@ from features.regular_season_advanced import (
     MomentumFeatures,
     TempoFeatures,
 )
+from features.coach import CoachFeatures
+from features.conf_tourney import ConfTourneyFeatures
+from features.location import LocationFeatures
+from features.travel import TravelFeatures
+from features.external_stubs import (
+    VegasOddsFeatures,
+    RosterContinuityFeatures,
+    APPollTrajectoryFeatures,
+)
 
 REGISTRY = {
     "massey": MasseyFeatures,
@@ -23,4 +32,12 @@ REGISTRY = {
     "scoring_variance": ScoringVarianceFeatures,
     "momentum": MomentumFeatures,
     "tempo": TempoFeatures,
+    "coach": CoachFeatures,
+    "conf_tourney": ConfTourneyFeatures,
+    "location": LocationFeatures,
+    "travel": TravelFeatures,
+    # External sources (not enabled by default — require data fetching)
+    "vegas": VegasOddsFeatures,
+    "roster": RosterContinuityFeatures,
+    "ap_poll": APPollTrajectoryFeatures,
 }

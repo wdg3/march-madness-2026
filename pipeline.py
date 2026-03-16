@@ -1,15 +1,18 @@
 from pathlib import Path
 import pandas as pd
 from features import REGISTRY
+from features.base import ExternalFeatureSource
 
 
-def build_team_features(data_dir: Path, enabled: list[str]) -> pd.DataFrame:
+def build_team_features(data_dir: Path, enabled: list[str], force_fetch: bool = False) -> pd.DataFrame:
     """Build per-team-per-season feature matrix by merging all enabled sources."""
     print("Building team features...")
     result = None
 
     for name in enabled:
         source = REGISTRY[name]()
+        if isinstance(source, ExternalFeatureSource):
+            source.ensure_fetched(data_dir, force=force_fetch)
         df = source.build(data_dir)
         if result is None:
             result = df
