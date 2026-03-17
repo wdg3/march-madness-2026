@@ -16,7 +16,7 @@ class FeatureSource(ABC):
         ...
 
     @abstractmethod
-    def build(self, data_dir: Path) -> pd.DataFrame:
+    def build(self, data_dir: Path, gender: str = "M") -> pd.DataFrame:
         ...
 
 

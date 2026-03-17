@@ -6,8 +6,9 @@ import numpy as np
 from features.base import FeatureSource
 
 
-def _unpivot_games(df):
+def _unpivot_games(data_dir, gender="M"):
     """Create one row per team per game with margin and game metadata."""
+    df = pd.read_csv(data_dir / f"{gender}RegularSeasonDetailedResults.csv")
     winners = pd.DataFrame({
         "Season": df["Season"],
         "DayNum": df["DayNum"],
@@ -53,10 +54,9 @@ class CloseGameFeatures(FeatureSource):
     def name(self) -> str:
         return "close_games"
 
-    def build(self, data_dir: Path) -> pd.DataFrame:
+    def build(self, data_dir: Path, gender: str = "M") -> pd.DataFrame:
         print("  Building close game features...")
-        df = pd.read_csv(data_dir / "MRegularSeasonDetailedResults.csv")
-        all_games = _unpivot_games(df)
+        all_games = _unpivot_games(data_dir, gender)
 
         close = all_games[all_games["Margin"].abs() <= 5]
         g = close.groupby(["Season", "TeamID"])
@@ -85,10 +85,9 @@ class ScoringVarianceFeatures(FeatureSource):
     def name(self) -> str:
         return "scoring_variance"
 
-    def build(self, data_dir: Path) -> pd.DataFrame:
+    def build(self, data_dir: Path, gender: str = "M") -> pd.DataFrame:
         print("  Building scoring variance features...")
-        df = pd.read_csv(data_dir / "MRegularSeasonDetailedResults.csv")
-        all_games = _unpivot_games(df)
+        all_games = _unpivot_games(data_dir, gender)
 
         g = all_games.groupby(["Season", "TeamID"])
         result = pd.DataFrame({
@@ -108,10 +107,10 @@ class MomentumFeatures(FeatureSource):
     def name(self) -> str:
         return "momentum"
 
-    def build(self, data_dir: Path) -> pd.DataFrame:
+    def build(self, data_dir: Path, gender: str = "M") -> pd.DataFrame:
         print("  Building momentum features...")
-        df = pd.read_csv(data_dir / "MRegularSeasonDetailedResults.csv")
-        all_games = _unpivot_games(df)
+        df = pd.read_csv(data_dir / f"{gender}RegularSeasonDetailedResults.csv")
+        all_games = _unpivot_games(data_dir, gender)
 
         # Compute per-season DayNum cutoff for "late season"
         cutoffs = df.groupby("Season")["DayNum"].quantile(
@@ -154,10 +153,9 @@ class TempoFeatures(FeatureSource):
     def name(self) -> str:
         return "tempo"
 
-    def build(self, data_dir: Path) -> pd.DataFrame:
+    def build(self, data_dir: Path, gender: str = "M") -> pd.DataFrame:
         print("  Building tempo features...")
-        df = pd.read_csv(data_dir / "MRegularSeasonDetailedResults.csv")
-        all_games = _unpivot_games(df)
+        all_games = _unpivot_games(data_dir, gender)
 
         # Estimate possessions per game
         all_games["Poss"] = (

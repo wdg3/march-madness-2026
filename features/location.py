@@ -17,9 +17,9 @@ class LocationFeatures(FeatureSource):
     def name(self) -> str:
         return "location"
 
-    def build(self, data_dir: Path) -> pd.DataFrame:
+    def build(self, data_dir: Path, gender: str = "M") -> pd.DataFrame:
         print("  Building location features...")
-        df = pd.read_csv(data_dir / "MRegularSeasonDetailedResults.csv")
+        df = pd.read_csv(data_dir / f"{gender}RegularSeasonDetailedResults.csv")
 
         # WLoc: H = winner was home, A = winner was away, N = neutral
         # Unpivot into per-team rows with location context

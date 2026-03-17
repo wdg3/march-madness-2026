@@ -16,9 +16,12 @@ class RankingDisagreementFeatures(FeatureSource):
     def name(self) -> str:
         return "rank_disagree"
 
-    def build(self, data_dir: Path) -> pd.DataFrame:
+    def build(self, data_dir: Path, gender: str = "M") -> pd.DataFrame:
         print("  Building ranking disagreement features...")
-        rankings = pd.read_csv(data_dir / "MMasseyOrdinals.csv")
+        path = data_dir / f"{gender}MasseyOrdinals.csv"
+        if not path.exists():
+            return pd.DataFrame(columns=["Season", "TeamID"])
+        rankings = pd.read_csv(path)
 
         # Keep latest ranking per (Season, TeamID, SystemName)
         idx = rankings.groupby(["Season", "TeamID", "SystemName"])["RankingDayNum"].idxmax()
@@ -45,14 +48,17 @@ class SeedRankDeltaFeatures(FeatureSource):
     def name(self) -> str:
         return "seed_rank_delta"
 
-    def build(self, data_dir: Path) -> pd.DataFrame:
+    def build(self, data_dir: Path, gender: str = "M") -> pd.DataFrame:
         print("  Building seed-rank delta features...")
         # Get seeds
-        seeds = pd.read_csv(data_dir / "MNCAATourneySeeds.csv")
+        seeds = pd.read_csv(data_dir / f"{gender}NCAATourneySeeds.csv")
         seeds["seed_num"] = seeds["Seed"].apply(lambda s: int(re.findall(r"\d+", s)[0]))
 
         # Get average ranking
-        rankings = pd.read_csv(data_dir / "MMasseyOrdinals.csv")
+        massey_path = data_dir / f"{gender}MasseyOrdinals.csv"
+        if not massey_path.exists():
+            return pd.DataFrame(columns=["Season", "TeamID"])
+        rankings = pd.read_csv(massey_path)
         idx = rankings.groupby(["Season", "TeamID", "SystemName"])["RankingDayNum"].idxmax()
         latest = rankings.loc[idx]
         avg_rank = latest.groupby(["Season", "TeamID"])["OrdinalRank"].mean().reset_index()

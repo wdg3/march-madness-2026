@@ -1,6 +1,6 @@
 data/
 output/
-AutogluonModels/
+AutogluonModels*/
 __pycache__/
 *.pyc
 .DS_Store

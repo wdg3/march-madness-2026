@@ -11,9 +11,9 @@ class ConfTourneyFeatures(FeatureSource):
     def name(self) -> str:
         return "conf_tourney"
 
-    def build(self, data_dir: Path) -> pd.DataFrame:
+    def build(self, data_dir: Path, gender: str = "M") -> pd.DataFrame:
         print("  Building conference tournament features...")
-        ct = pd.read_csv(data_dir / "MConferenceTourneyGames.csv")
+        ct = pd.read_csv(data_dir / f"{gender}ConferenceTourneyGames.csv")
 
         # Count wins and losses per team per season
         wins = ct.groupby(["Season", "WTeamID"]).size().reset_index(name="ct_wins")

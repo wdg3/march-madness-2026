@@ -39,7 +39,7 @@ class VegasOddsFeatures(ExternalFeatureSource):
             "at data/external/vegas/odds.csv"
         )
 
-    def build(self, data_dir: Path) -> pd.DataFrame:
+    def build(self, data_dir: Path, gender: str = "M") -> pd.DataFrame:
         csv_path = self.external_data_dir(data_dir) / "odds.csv"
         if not csv_path.exists():
             raise FileNotFoundError(
@@ -74,7 +74,7 @@ class RosterContinuityFeatures(ExternalFeatureSource):
             "at data/external/roster/continuity.csv"
         )
 
-    def build(self, data_dir: Path) -> pd.DataFrame:
+    def build(self, data_dir: Path, gender: str = "M") -> pd.DataFrame:
         csv_path = self.external_data_dir(data_dir) / "continuity.csv"
         if not csv_path.exists():
             raise FileNotFoundError(

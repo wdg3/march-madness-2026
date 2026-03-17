@@ -7,9 +7,12 @@ class MasseyFeatures(FeatureSource):
     def name(self) -> str:
         return "massey"
 
-    def build(self, data_dir: Path) -> pd.DataFrame:
+    def build(self, data_dir: Path, gender: str = "M") -> pd.DataFrame:
         print("  Building Massey Ordinals features...")
-        rankings = pd.read_csv(data_dir / "MMasseyOrdinals.csv")
+        path = data_dir / f"{gender}MasseyOrdinals.csv"
+        if not path.exists():
+            return pd.DataFrame(columns=["Season", "TeamID"])
+        rankings = pd.read_csv(path)
 
         # Keep only the last available ranking day per (Season, TeamID, SystemName)
         idx = rankings.groupby(["Season", "TeamID", "SystemName"])["RankingDayNum"].idxmax()

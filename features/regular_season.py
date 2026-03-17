@@ -8,9 +8,9 @@ class RegularSeasonFeatures(FeatureSource):
     def name(self) -> str:
         return "rs"
 
-    def build(self, data_dir: Path) -> pd.DataFrame:
+    def build(self, data_dir: Path, gender: str = "M") -> pd.DataFrame:
         print("  Building regular season features...")
-        df = pd.read_csv(data_dir / "MRegularSeasonDetailedResults.csv")
+        df = pd.read_csv(data_dir / f"{gender}RegularSeasonDetailedResults.csv")
 
         # Unpivot: create one row per team per game
         # Winner perspective

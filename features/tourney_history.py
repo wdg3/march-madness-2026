@@ -7,10 +7,10 @@ class TourneyHistoryFeatures(FeatureSource):
     def name(self) -> str:
         return "th"
 
-    def build(self, data_dir: Path) -> pd.DataFrame:
+    def build(self, data_dir: Path, gender: str = "M") -> pd.DataFrame:
         print("  Building tournament history features...")
-        results = pd.read_csv(data_dir / "MNCAATourneyCompactResults.csv")
-        seeds = pd.read_csv(data_dir / "MNCAATourneySeeds.csv")
+        results = pd.read_csv(data_dir / f"{gender}NCAATourneyCompactResults.csv")
+        seeds = pd.read_csv(data_dir / f"{gender}NCAATourneySeeds.csv")
 
         # Count wins per team per season
         wins = results.groupby(["Season", "WTeamID"]).size().reset_index(name="wins")

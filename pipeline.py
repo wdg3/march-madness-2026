@@ -5,9 +5,10 @@ from features.base import ExternalFeatureSource
 from features.travel import ensure_geocoded, add_travel_to_matchups, add_travel_to_predictions
 
 
-def build_team_features(data_dir: Path, enabled: list[str], force_fetch: bool = False) -> pd.DataFrame:
+def build_team_features(data_dir: Path, enabled: list[str], force_fetch: bool = False,
+                        gender: str = "M") -> pd.DataFrame:
     """Build per-team-per-season feature matrix by merging all enabled sources."""
-    print("Building team features...")
+    print(f"Building {'women' if gender == 'W' else 'men'}'s team features...")
     result = None
 
     # Filter out "travel" — it's now a matchup-level feature, not team-level
@@ -16,8 +17,14 @@ def build_team_features(data_dir: Path, enabled: list[str], force_fetch: bool = 
     for name in team_sources:
         source = REGISTRY[name]()
         if isinstance(source, ExternalFeatureSource):
-            source.ensure_fetched(data_dir, force=force_fetch)
-        df = source.build(data_dir)
+            if gender == "M":
+                source.ensure_fetched(data_dir, force=force_fetch)
+            elif not source.is_fetched(data_dir):
+                # Skip external sources that haven't been fetched for women
+                continue
+        df = source.build(data_dir, gender=gender)
+        if df.empty or list(df.columns) == ["Season", "TeamID"]:
+            continue  # Skip empty feature sources (e.g., massey for women)
         if result is None:
             result = df
         else:

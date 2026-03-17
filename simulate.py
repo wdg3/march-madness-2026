@@ -198,6 +198,22 @@ def format_bracket(bracket_df, slot_counts, team_names, n_sims):
     return "\n".join(lines)
 
 
+def run(submission=None, season=None, n_sims=10000, seed=42):
+    """Run bracket simulation with given parameters."""
+    submission = submission or str(OUTPUT_DIR / "submission.csv")
+    season = season or PREDICTION_SEASON
+
+    bracket_df, slot_counts, team_names = simulate_tournament(
+        submission, season, DATA_DIR, n_sims, seed,
+    )
+
+    print(format_bracket(bracket_df, slot_counts, team_names, n_sims))
+
+    out_path = OUTPUT_DIR / "bracket.csv"
+    bracket_df.drop(columns=["_sort"], errors="ignore").to_csv(out_path, index=False)
+    print(f"\nBracket saved to {out_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Monte Carlo bracket simulation")
     parser.add_argument("--n-sims", type=int, default=10000,
@@ -210,16 +226,7 @@ def main():
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducibility")
     args = parser.parse_args()
-
-    bracket_df, slot_counts, team_names = simulate_tournament(
-        args.submission, args.season, DATA_DIR, args.n_sims, args.seed,
-    )
-
-    print(format_bracket(bracket_df, slot_counts, team_names, args.n_sims))
-
-    out_path = OUTPUT_DIR / "bracket.csv"
-    bracket_df.drop(columns=["_sort"], errors="ignore").to_csv(out_path, index=False)
-    print(f"\nBracket saved to {out_path}")
+    run(args.submission, args.season, args.n_sims, args.seed)
 
 
 if __name__ == "__main__":

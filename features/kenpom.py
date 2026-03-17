@@ -64,8 +64,10 @@ class KenPomFeatures(ExternalFeatureSource):
         import shutil
         shutil.copy(src, ext_dir / "kenpom_barttorvik.csv")
 
-    def build(self, data_dir: Path) -> pd.DataFrame:
+    def build(self, data_dir: Path, gender: str = "M") -> pd.DataFrame:
         print("  Building KenPom/BartTorvik features...")
+        if gender != "M":
+            return pd.DataFrame(columns=["Season", "TeamID"])
         csv_path = self.external_data_dir(data_dir) / "kenpom_barttorvik.csv"
         df = pd.read_csv(csv_path)
         df = _map_team_ids(df, data_dir)
@@ -129,8 +131,10 @@ class APPollFeatures(ExternalFeatureSource):
         import shutil
         shutil.copy(src, ext_dir / "ap_poll.csv")
 
-    def build(self, data_dir: Path) -> pd.DataFrame:
+    def build(self, data_dir: Path, gender: str = "M") -> pd.DataFrame:
         print("  Building AP Poll trajectory features...")
+        if gender != "M":
+            return pd.DataFrame(columns=["Season", "TeamID"])
         csv_path = self.external_data_dir(data_dir) / "ap_poll.csv"
         df = pd.read_csv(csv_path)
 
@@ -196,8 +200,10 @@ class PublicPicksFeatures(ExternalFeatureSource):
         import shutil
         shutil.copy(src, ext_dir / "public_picks.csv")
 
-    def build(self, data_dir: Path) -> pd.DataFrame:
+    def build(self, data_dir: Path, gender: str = "M") -> pd.DataFrame:
         print("  Building public picks features...")
+        if gender != "M":
+            return pd.DataFrame(columns=["Season", "TeamID"])
         csv_path = self.external_data_dir(data_dir) / "public_picks.csv"
         df = pd.read_csv(csv_path)
 

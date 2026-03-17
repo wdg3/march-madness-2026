@@ -12,10 +12,13 @@ class CoachFeatures(FeatureSource):
     def name(self) -> str:
         return "coach"
 
-    def build(self, data_dir: Path) -> pd.DataFrame:
+    def build(self, data_dir: Path, gender: str = "M") -> pd.DataFrame:
         print("  Building coach features...")
-        coaches = pd.read_csv(data_dir / "MTeamCoaches.csv")
-        tourney = pd.read_csv(data_dir / "MNCAATourneyCompactResults.csv")
+        coaches_path = data_dir / f"{gender}TeamCoaches.csv"
+        if not coaches_path.exists():
+            return pd.DataFrame(columns=["Season", "TeamID"])
+        coaches = pd.read_csv(coaches_path)
+        tourney = pd.read_csv(data_dir / f"{gender}NCAATourneyCompactResults.csv")
 
         # Get the coach for each team-season (use the coach active at end of season)
         end_of_season = coaches.groupby(["Season", "TeamID"])["LastDayNum"].idxmax()
