@@ -54,8 +54,8 @@ def generate_submission(
     final = sample_submission[["ID"]].merge(sub, on="ID", how="left")
     final["Pred"] = final["Pred"].fillna(0.5)
 
-    # Clip to avoid catastrophic log loss
-    final["Pred"] = final["Pred"].clip(0.05, 0.95)
+    # Clip extreme probabilities (wide range for Brier score grading)
+    final["Pred"] = final["Pred"].clip(0.01, 0.99)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     final.to_csv(output_path, index=False)

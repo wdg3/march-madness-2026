@@ -1,4 +1,8 @@
-autogluon>=1.2.0
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch
+torchvision
+autogluon.tabular[fastai]==1.5.0
+ipython
 catboost
 lightgbm
 pandas>=2.2.3

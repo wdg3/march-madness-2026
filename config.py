@@ -31,6 +31,8 @@ ENABLED_FEATURES = [
     "conf_tourney",
     "location",
     "travel",
+    "rs_trajectory",
+    "massey_trajectory",
     # External sources (require data in data/external/):
     "kenpom",
     "ap_poll",

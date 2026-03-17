@@ -1,10 +1,10 @@
 """March Madness 2026 — CLI entry point.
 
 Usage:
-    python run.py train     Train the model on men's historical data
-    python run.py predict   Generate men's-only submission CSV
-    python run.py bracket   Run Monte Carlo bracket simulation
-    python run.py submit    Generate full Kaggle submission (men's + women's)
+    python run.py train --tag v1          Train a model with a tag
+    python run.py predict --tag v1        Generate men's-only submission CSV
+    python run.py bracket --tag v1        Run Monte Carlo bracket simulation
+    python run.py submit --tag v1         Generate full Kaggle submission (men's + women's)
 """
 
 import argparse
@@ -19,7 +19,11 @@ from config import (
     AG_NUM_STACK_LEVELS, ENABLED_FEATURES,
 )
 
-MODEL_DIR = Path("./AutogluonModels")
+MODELS_ROOT = Path("./AutogluonModels")
+
+
+def model_dir(tag: str) -> Path:
+    return MODELS_ROOT / tag
 
 
 def cmd_train(args):
@@ -27,6 +31,10 @@ def cmd_train(args):
     from pipeline import build_team_features, build_matchups
     from features.travel import ensure_geocoded
     from training import train
+
+    out_dir = model_dir(args.tag)
+    if out_dir.exists():
+        print(f"Warning: model directory {out_dir} already exists, will overwrite.")
 
     # Build men's features
     team_features = build_team_features(DATA_DIR, ENABLED_FEATURES, gender="M")
@@ -55,9 +63,9 @@ def cmd_train(args):
         time_limit=args.time_limit or AG_TIME_LIMIT,
         num_bag_folds=AG_NUM_BAG_FOLDS,
         num_stack_levels=AG_NUM_STACK_LEVELS,
-        output_dir=str(MODEL_DIR),
+        output_dir=str(out_dir),
     )
-    print("\nTraining complete!")
+    print(f"\nTraining complete! Model saved to {out_dir}")
 
 
 def cmd_predict(args):
@@ -67,7 +75,7 @@ def cmd_predict(args):
     from features.travel import ensure_geocoded
     from submission import generate_submission
 
-    predictor = TabularPredictor.load(str(MODEL_DIR))
+    predictor = TabularPredictor.load(str(model_dir(args.tag)))
 
     team_features = build_team_features(DATA_DIR, ENABLED_FEATURES, gender="M")
 
@@ -80,7 +88,7 @@ def cmd_predict(args):
     )
 
     sample_sub = pd.read_csv(DATA_DIR / "SampleSubmissionStage2.csv")
-    output_path = OUTPUT_DIR / "submission.csv"
+    output_path = OUTPUT_DIR / f"submission_{args.tag}.csv"
     generate_submission(predictor, pred_pairs, sample_sub, output_path)
     print(f"\nMen's submission saved to {output_path}")
 
@@ -88,7 +96,8 @@ def cmd_predict(args):
 def cmd_bracket(args):
     """Run Monte Carlo bracket simulation."""
     import simulate
-    simulate.run(args.submission, args.season, args.n_sims)
+    submission = args.submission or str(OUTPUT_DIR / f"submission_{args.tag}.csv")
+    simulate.run(submission, args.season, args.n_sims)
 
 
 def cmd_submit(args):
@@ -98,7 +107,7 @@ def cmd_submit(args):
     from features.travel import ensure_geocoded
     from submission import generate_submission
 
-    predictor = TabularPredictor.load(str(MODEL_DIR))
+    predictor = TabularPredictor.load(str(model_dir(args.tag)))
 
     use_travel = "travel" in ENABLED_FEATURES
 
@@ -133,7 +142,7 @@ def cmd_submit(args):
     all_pairs = pd.concat([men_pairs, women_pairs], ignore_index=True)
 
     sample_sub = pd.read_csv(DATA_DIR / "SampleSubmissionStage2.csv")
-    output_path = OUTPUT_DIR / "submission.csv"
+    output_path = OUTPUT_DIR / f"submission_{args.tag}.csv"
     generate_submission(predictor, all_pairs, sample_sub, output_path)
     print(f"\nFull submission saved to {output_path}")
 
@@ -155,22 +164,26 @@ def main():
 
     # train
     p_train = subparsers.add_parser("train", help="Train the model")
+    p_train.add_argument("--tag", required=True, help="Model tag (e.g. v1, brier_no_ts)")
     p_train.add_argument("--time-limit", type=int, help="Training time limit in seconds")
     p_train.set_defaults(func=cmd_train)
 
     # predict
     p_predict = subparsers.add_parser("predict", help="Generate men's submission CSV")
+    p_predict.add_argument("--tag", required=True, help="Model tag to load")
     p_predict.set_defaults(func=cmd_predict)
 
     # bracket
     p_bracket = subparsers.add_parser("bracket", help="Monte Carlo bracket simulation")
+    p_bracket.add_argument("--tag", required=True, help="Model tag to load")
     p_bracket.add_argument("--n-sims", type=int, default=10000, help="Number of simulations")
-    p_bracket.add_argument("--submission", default="output/submission.csv")
+    p_bracket.add_argument("--submission", default=None)
     p_bracket.add_argument("--season", type=int, default=PREDICTION_SEASON)
     p_bracket.set_defaults(func=cmd_bracket)
 
     # submit
     p_submit = subparsers.add_parser("submit", help="Generate full Kaggle submission (men's + women's)")
+    p_submit.add_argument("--tag", required=True, help="Model tag to load")
     p_submit.set_defaults(func=cmd_submit)
 
     args = parser.parse_args()

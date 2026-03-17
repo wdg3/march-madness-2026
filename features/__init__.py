@@ -14,6 +14,8 @@ from features.coach import CoachFeatures
 from features.conf_tourney import ConfTourneyFeatures
 from features.location import LocationFeatures
 # Note: travel is a matchup-level feature handled in pipeline.py, not here
+from features.trajectory import RegularSeasonTrajectoryFeatures
+from features.massey_trajectory import MasseyTrajectoryFeatures
 from features.external_stubs import (
     VegasOddsFeatures,
     RosterContinuityFeatures,
@@ -35,6 +37,8 @@ REGISTRY = {
     "coach": CoachFeatures,
     "conf_tourney": ConfTourneyFeatures,
     "location": LocationFeatures,
+    "rs_trajectory": RegularSeasonTrajectoryFeatures,
+    "massey_trajectory": MasseyTrajectoryFeatures,
     # "travel" is a matchup-level feature, not team-level — handled in pipeline.py
     # External sources (not enabled by default — require data fetching)
     "vegas": VegasOddsFeatures,
