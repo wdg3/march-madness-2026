@@ -4,11 +4,11 @@ ML pipeline to predict the 2026 NCAA March Madness tournament (men's and women's
 
 ## Approach
 
-Uses [AutoGluon](https://auto.gluon.ai/) with `best_quality` preset (multi-layer stacking, 10-fold bagging) to train an ensemble of gradient boosting, tree, and neural network models (CatBoost, LightGBM, XGBoost, RandomForest, ExtraTrees, NN_TORCH, FastAI). Optimized for **Brier score** (better calibration on lopsided matchups than log loss). GPU-accelerated for neural nets, CPU for tree models. Trained on men's data from 2010-2024, validated on 2025.
+Uses [AutoGluon](https://auto.gluon.ai/) with `best_quality` preset (2-level stacking, 10-fold bagging) to train an ensemble of gradient boosting, tree, and neural network models (LightGBM, XGBoost, CatBoost, RandomForest, ExtraTrees, NN_TORCH, FastAI). Optimized for **Brier score** (better calibration on lopsided matchups than log loss). GPU-accelerated for neural nets, CPU for tree models. Trained on men's tournament data from 2010-2024 (14 seasons, excluding 2020/COVID), validated on 2025.
 
 Each matchup is modeled as a pairwise comparison: `[TeamA_features | TeamB_features | delta_features] -> P(TeamA wins)`. Delta features (A - B for every stat) give the model direct access to relative differences. Predictions are symmetry-enforced so `P(A>B) + P(B>A) = 1`. The same model is applied to women's tournament predictions (transfer learning -- features that don't exist for women become NaN, which AutoGluon handles natively).
 
-Model hyperparameters are explicitly regularized for the small tournament dataset (~1,200 training games): capped tree depth, L1/L2 regularization, feature subsampling, and high minimum leaf samples to prevent overfitting.
+Model hyperparameters are explicitly regularized for the small tournament dataset (~950 games, ~1,900 training rows): capped tree depth, L1/L2 regularization, feature subsampling, and high minimum leaf samples to prevent overfitting.
 
 ## Features
 
@@ -23,7 +23,7 @@ Model hyperparameters are explicitly regularized for the small tournament datase
 | **Public Picks** | ESPN bracket pick percentages per round (Vegas proxy) | 6 |
 | **Vegas Odds** | Market-implied strength, ATS performance, cover margin trends | 18 |
 | **Roster** | Returning minutes %, new player share, class seniority | 4 |
-| **Regular Season** | Efficiency stats from box scores (off/def efficiency, shooting %, rebounds) | 20 |
+| **Regular Season** | Efficiency stats from box scores (off/def efficiency, shooting %, rebounds) | 19 |
 | **RS Trajectory** | Windowed early/late splits, linear trends, volatility for season stats | 35 |
 | **Ranking Disagreement** | Std/range/mean/median across Massey systems | 5 |
 | **Seed-Rank Delta** | Gap between seed and average ranking | 2 |
@@ -96,7 +96,7 @@ python run.py train --tag v1
 python run.py train --tag v1 --time-limit 10800   # 3 hours
 ```
 
-Trains on men's historical tournament data (2010-2024), validates on 2025. Default time limit is 2 hours (7200s). Longer training times generally improve results as AutoGluon explores more model configurations.
+Trains on men's historical tournament data (2010-2024, excluding 2020), validates on 2025. Default time limit is 2 hours (7200s). Longer training times generally improve results as AutoGluon explores more model configurations.
 
 ### Predict (men's only)
 
