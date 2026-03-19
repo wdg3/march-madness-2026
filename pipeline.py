@@ -64,10 +64,11 @@ def build_matchups(team_features: pd.DataFrame, games: pd.DataFrame,
 
         w_feats = w[feat_cols].values[0]
         l_feats = l[feat_cols].values[0]
+        delta = w_feats - l_feats
 
         # Winner as A (label=1), Loser as A (label=0)
-        row1 = [s, game["WTeamID"], game["LTeamID"]] + list(w_feats) + list(l_feats) + [1]
-        row0 = [s, game["LTeamID"], game["WTeamID"]] + list(l_feats) + list(w_feats) + [0]
+        row1 = [s, game["WTeamID"], game["LTeamID"]] + list(w_feats) + list(l_feats) + list(delta) + [1]
+        row0 = [s, game["LTeamID"], game["WTeamID"]] + list(l_feats) + list(w_feats) + list(-delta) + [0]
         rows.append(row1)
         rows.append(row0)
 
@@ -75,6 +76,7 @@ def build_matchups(team_features: pd.DataFrame, games: pd.DataFrame,
         ["Season", "TeamID_A", "TeamID_B"]
         + [f"{c}_A" for c in feat_cols]
         + [f"{c}_B" for c in feat_cols]
+        + [f"{c}_delta" for c in feat_cols]
         + ["Label"]
     )
     result = pd.DataFrame(rows, columns=col_names)
@@ -104,12 +106,14 @@ def build_prediction_pairs(team_features: pd.DataFrame, season: int,
             if a != b:
                 a_feats = current[current["TeamID"] == a][feat_cols].values[0]
                 b_feats = current[current["TeamID"] == b][feat_cols].values[0]
-                rows.append([season, a, b] + list(a_feats) + list(b_feats))
+                delta = a_feats - b_feats
+                rows.append([season, a, b] + list(a_feats) + list(b_feats) + list(delta))
 
     col_names = (
         ["Season", "TeamID_A", "TeamID_B"]
         + [f"{c}_A" for c in feat_cols]
         + [f"{c}_B" for c in feat_cols]
+        + [f"{c}_delta" for c in feat_cols]
     )
     result = pd.DataFrame(rows, columns=col_names)
 

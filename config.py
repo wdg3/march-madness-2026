@@ -11,8 +11,8 @@ PREDICTION_SEASON = 2026
 # AutoGluon
 AG_PRESETS = "best_quality"
 AG_TIME_LIMIT = 7200  # 2 hours
-AG_NUM_BAG_FOLDS = 8
-AG_NUM_STACK_LEVELS = 1
+AG_NUM_BAG_FOLDS = 10
+AG_NUM_STACK_LEVELS = 2
 
 # Feature sources to enable
 ENABLED_FEATURES = [
@@ -37,6 +37,6 @@ ENABLED_FEATURES = [
     "kenpom",
     "ap_poll",
     "public_picks",
-    # "vegas",
-    # "roster",
+    "roster",
+    "vegas",
 ]

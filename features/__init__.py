@@ -16,10 +16,8 @@ from features.location import LocationFeatures
 # Note: travel is a matchup-level feature handled in pipeline.py, not here
 from features.trajectory import RegularSeasonTrajectoryFeatures
 from features.massey_trajectory import MasseyTrajectoryFeatures
-from features.external_stubs import (
-    VegasOddsFeatures,
-    RosterContinuityFeatures,
-)
+from features.vegas import VegasOddsFeatures
+from features.roster import RosterContinuityFeatures
 from features.kenpom import KenPomFeatures, APPollFeatures, PublicPicksFeatures
 
 REGISTRY = {

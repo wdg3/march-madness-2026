@@ -4,21 +4,25 @@ ML pipeline to predict the 2026 NCAA March Madness tournament (men's and women's
 
 ## Approach
 
-Uses [AutoGluon](https://auto.gluon.ai/) with `best_quality` preset (multi-layer stacking, 8-fold bagging) to train an ensemble of gradient boosting, tree, and neural network models (CatBoost, LightGBM, RandomForest, ExtraTrees, NN_TORCH, FastAI). Optimized for **Brier score** (better calibration on lopsided matchups than log loss). GPU-accelerated for neural nets, CPU for tree models. Trained on men's data from 2010-2024, validated on 2025.
+Uses [AutoGluon](https://auto.gluon.ai/) with `best_quality` preset (multi-layer stacking, 10-fold bagging) to train an ensemble of gradient boosting, tree, and neural network models (CatBoost, LightGBM, XGBoost, RandomForest, ExtraTrees, NN_TORCH, FastAI). Optimized for **Brier score** (better calibration on lopsided matchups than log loss). GPU-accelerated for neural nets, CPU for tree models. Trained on men's data from 2010-2024, validated on 2025.
 
-Each matchup is modeled as a pairwise comparison: `[TeamA_features | TeamB_features] -> P(TeamA wins)`. Predictions are symmetry-enforced so `P(A>B) + P(B>A) = 1`. The same model is applied to women's tournament predictions (transfer learning -- features that don't exist for women become NaN, which AutoGluon handles natively).
+Each matchup is modeled as a pairwise comparison: `[TeamA_features | TeamB_features | delta_features] -> P(TeamA wins)`. Delta features (A - B for every stat) give the model direct access to relative differences. Predictions are symmetry-enforced so `P(A>B) + P(B>A) = 1`. The same model is applied to women's tournament predictions (transfer learning -- features that don't exist for women become NaN, which AutoGluon handles natively).
+
+Model hyperparameters are explicitly regularized for the small tournament dataset (~1,200 training games): capped tree depth, L1/L2 regularization, feature subsampling, and high minimum leaf samples to prevent overfitting.
 
 ## Features
 
-20 pluggable feature sources:
+22 pluggable feature sources:
 
 | Source | Description | Features |
 |--------|-------------|----------|
 | **Massey Ordinals** | 194 ranking systems (AP, Sagarin, KenPom, etc.) | ~194 |
 | **Massey Trajectory** | Per-system rank trends, convergence, aggregate momentum | 15 |
-| **KenPom/BartTorvik** | Adjusted efficiency, tempo, BARTHAG, four factors, talent | 20 |
+| **KenPom/BartTorvik** | Adjusted efficiency, tempo, BARTHAG from pre-tournament snapshots | 8 |
 | **AP Poll** | Poll trajectory -- weeks ranked, preseason/final rank, volatility | 8 |
 | **Public Picks** | ESPN bracket pick percentages per round (Vegas proxy) | 6 |
+| **Vegas Odds** | Market-implied strength, ATS performance, cover margin trends | 18 |
+| **Roster** | Returning minutes %, new player share, class seniority | 4 |
 | **Regular Season** | Efficiency stats from box scores (off/def efficiency, shooting %, rebounds) | 20 |
 | **RS Trajectory** | Windowed early/late splits, linear trends, volatility for season stats | 35 |
 | **Ranking Disagreement** | Std/range/mean/median across Massey systems | 5 |
@@ -60,6 +64,26 @@ unzip march-machine-learning-mania-2026.zip -d data/
 kaggle datasets download -d nishaanamin/march-madness-data
 unzip march-madness-data.zip -d data/external/kaggle_mm/
 ```
+
+3. For Vegas/ATS features, place the [Scottfree NCAAB historical odds](https://www.scottfreellc.com/shop/p/college-historical-odds-data) at `data/external/scottfree/ncaab.csv`. For the current prediction season, place Odds API data at `data/external/odds_api/ncaab_2026_odds_v2.csv` (see below for format details).
+
+4. For roster continuity and KenPom/BartTorvik features, the pipeline auto-fetches from barttorvik.com on first run (cached in `data/external/roster/` and `data/external/kenpom/`).
+
+### Odds API data format
+
+The Odds API CSV (`ncaab_2026_odds_v2.csv`) should have columns:
+
+```csv
+date,home_team,away_team,home_point_spread,away_point_spread,home_money_line,away_money_line,over_under
+```
+
+- `date`: ISO timestamp (`2025-11-04T23:30:00Z`) or bare date (`2025-11-05`)
+- `home_team`/`away_team`: Full team names with mascot (e.g., `Duke Blue Devils`)
+- Spreads: home perspective (negative = home favored)
+- Money lines: American format
+- `over_under`: Total points line
+
+The pipeline uses `MSeasons.csv` DayZero for precise date-to-DayNum conversion, matching odds rows to Kaggle game scores. It handles mixed date formats (full ISO timestamps use UTC-to-Eastern conversion; bare dates are used directly). Score joining uses three strategies: exact DayNum match, +/-1 day tolerance for timezone edge cases, and chronological pair matching as fallback.
 
 ## Usage
 
@@ -136,6 +160,18 @@ Season,TeamA,TeamB,PriceA,PriceB
 - `--fee` -- Platform fee per contract in dollars (default: 0, e.g. 0.02 for 2c)
 - `--output` -- Save bet sheet to CSV
 
+### Futures betting
+
+The bracket simulation outputs per-team per-round advancement probabilities. Compare these against prediction market prices (e.g. Kalshi's `KXMARMADROUND` series) to identify positive-edge bets:
+
+```bash
+# Run large bracket simulation for stable probabilities
+python run.py bracket --tag v1 --n-sims 100000
+
+# Compare advancement probabilities against Kalshi market prices
+# (custom script — see output/advancement_probs_*.csv and output/futures_bets_*.csv)
+```
+
 ## Configuration
 
 All tunable parameters are in `config.py`: train/validation/prediction seasons, AutoGluon presets, time limits, bagging folds, and enabled feature sources. Toggle features on/off by editing the `ENABLED_FEATURES` list.
@@ -173,7 +209,7 @@ python run.py train --tag v1
 
 # Generate Kaggle submission and bracket
 python run.py submit --tag v1
-python run.py bracket --tag v1
+python run.py bracket --tag v1 --n-sims 100000
 
 # Backtest against 2025 actuals
 python backtest.py --season 2025 --submission output/submission_v1.csv
@@ -181,3 +217,48 @@ python backtest.py --season 2025 --submission output/submission_v1.csv
 # Place bets on First Four games
 python betting.py --odds odds_first_four.csv --tag v1 --kelly 0.5 --fee 0.02
 ```
+
+## Project structure
+
+```
+run.py                  CLI entry point (train/predict/bracket/submit)
+config.py               Tunable parameters and feature toggles
+pipeline.py             Feature matrix and matchup pair construction
+training.py             AutoGluon training with Brier score and regularization
+submission.py           Kaggle submission CSV generation
+simulate.py             Monte Carlo bracket simulation
+backtest.py             ESPN-scored bracket backtesting
+betting.py              Kelly Criterion bet sheet generator
+
+features/
+  base.py               FeatureSource and ExternalFeatureSource base classes
+  __init__.py            Feature registry
+  seeds.py              Tournament seeds
+  conference.py         Conference affiliation
+  massey.py             Massey Ordinals (194 ranking systems)
+  massey_meta.py        Ranking disagreement and seed-rank delta
+  massey_trajectory.py  Per-system rank trends and convergence
+  regular_season.py     Box score efficiency stats
+  trajectory.py         Regular season windowed splits and trends
+  regular_season_advanced.py  Close games, scoring variance, momentum, tempo
+  tourney_history.py    Prior tournament appearances and wins
+  coach.py              Coach tournament record
+  conf_tourney.py       Conference tournament performance
+  location.py           Away/neutral game splits
+  travel.py             Distance to game venue (matchup-level)
+  kenpom.py             BartTorvik adjusted efficiency + AP Poll + public picks
+  vegas.py              Vegas odds and ATS features (Scottfree + Odds API)
+  roster.py             Roster continuity from BartTorvik player data
+  external_stubs.py     Documentation for implemented external sources
+```
+
+## Data sources
+
+| Source | Location | Coverage | Notes |
+|--------|----------|----------|-------|
+| Kaggle competition data | `data/` | All seasons | Official competition datasets |
+| BartTorvik time machine | `data/external/kenpom/` | 2010-2026 | Pre-tournament snapshots (Selection Sunday), auto-fetched |
+| Kaggle external dataset | `data/external/kaggle_mm/` | 2010-2025 | AP Poll, public picks |
+| Scottfree NCAAB odds | `data/external/scottfree/` | 2008-2025 | Historical closing lines (paid dataset) |
+| The Odds API | `data/external/odds_api/` | 2026 | Current season consensus closing lines |
+| BartTorvik roster data | `data/external/roster/` | 2008-2026 | Player stats for returning minutes %, auto-fetched |

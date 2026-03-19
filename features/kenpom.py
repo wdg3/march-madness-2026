@@ -1,11 +1,20 @@
-"""KenPom and BartTorvik adjusted efficiency features from external Kaggle dataset.
+"""BartTorvik adjusted efficiency features from pre-tournament snapshots.
 
-Source: https://www.kaggle.com/datasets/nishaanamin/march-madness-data
-These are opponent-adjusted stats that go beyond raw box scores — they account
-for strength of schedule and pace, which our raw regular season features don't.
+Source: BartTorvik Time Machine (barttorvik.com/timemachine/)
+Snapshots taken on Selection Sunday (before NCAA tournament begins) to avoid
+tournament result contamination in adjusted metrics.
+
+The previous Kaggle dataset (nishaanamin/march-madness-data) used post-tournament
+BartTorvik ratings, which inflated KADJ EM by ~2-3 points for deep-run teams.
 """
 
+import gzip
+import io
+import json
+import time
+import urllib.request
 from pathlib import Path
+
 import pandas as pd
 import numpy as np
 from features.base import ExternalFeatureSource
@@ -13,8 +22,59 @@ from features.base import ExternalFeatureSource
 
 # Manual fixes for team names that don't match MTeamSpellings
 NAME_OVERRIDES = {
+    "Arkansas Little Rock": "ualr",
+    "Arkansas Pine Bluff": "Ark Pine Bluff",
+    "Bethune Cookman": "Bethune-Cookman",
+    "Cal St. Bakersfield": "CS Bakersfield",
+    "Dixie St.": "Dixie St",
+    "Illinois Chicago": "IL Chicago",
+    "Louisiana Lafayette": "Louisiana",
+    "Louisiana Monroe": "La-Monroe",
+    "Mississippi Valley St.": "Mississippi Valley State",
     "Queens": "Queens NC",
+    "Saint Francis": "St Francis PA",
+    "Southeast Missouri St.": "Southeast Missouri",
+    "St. Francis NY": "St Francis NY",
+    "St. Francis PA": "St Francis PA",
+    "Tarleton St.": "Tarleton St",
+    "Tennessee Martin": "UT Martin",
+    "Texas A&M Commerce": "East Texas A&M",
+    "Texas A&M Corpus Chris": "A&M-Corpus Christi",
+    "UT Rio Grande Valley": "UTRGV",
+    "Winston Salem St.": "Winston-Salem",
 }
+
+# Selection Sunday dates by season (YYYYMMDD format)
+# These are the last dates before the NCAA tournament begins
+_SELECTION_SUNDAYS = {
+    2010: "20100314",
+    2011: "20110313",
+    2012: "20120311",
+    2013: "20130310",
+    2014: "20140316",
+    2015: "20150315",
+    2016: "20160313",
+    2017: "20170312",
+    2018: "20180311",
+    2019: "20190317",
+    2021: "20210314",
+    2022: "20220313",
+    2023: "20230312",
+    2024: "20240317",
+    2025: "20250316",
+    2026: "20260315",
+}
+
+# Column names for the BartTorvik time machine JSON (list of lists, no header)
+_TORVIK_COLS = [
+    "rank", "team", "conf", "record", "adjoe", "oe_rank", "adjde", "de_rank",
+    "barthag", "rank2", "proj_w", "proj_l", "pro_con_w", "pro_con_l", "con_rec",
+    "sos", "ncsos", "consos", "proj_sos", "proj_ncsos", "proj_consos",
+    "elite_sos", "elite_ncsos", "opp_oe", "opp_de", "opp_proj_oe", "opp_proj_de",
+    "con_adj_oe", "con_adj_de", "qual_o", "qual_d", "qual_barthag", "qual_games",
+    "fun", "conpf", "conpa", "conposs", "conoe", "conde", "consos_remain",
+    "conf_winpct", "wab", "wab_rk", "fun_rk", "adjt",
+]
 
 
 def _build_name_to_id(data_dir: Path) -> dict:
@@ -29,89 +89,130 @@ def _build_name_to_id(data_dir: Path) -> dict:
     return name_to_id
 
 
-def _map_team_ids(ext_df: pd.DataFrame, data_dir: Path) -> pd.DataFrame:
-    """Map external dataset team names to our TeamID system."""
-    name_to_id = _build_name_to_id(data_dir)
-    ext_df = ext_df.copy()
-    ext_df["_name"] = ext_df["TEAM"].apply(
-        lambda x: NAME_OVERRIDES.get(x.strip(), x.strip())
-    )
-    ext_df["TeamID"] = ext_df["_name"].str.lower().str.strip().map(name_to_id)
-    ext_df["Season"] = ext_df["YEAR"]
-    return ext_df
+def _fetch_timemachine(date_str: str) -> pd.DataFrame:
+    """Fetch a BartTorvik time machine snapshot for a given date."""
+    url = f"https://barttorvik.com/timemachine/team_results/{date_str}_team_results.json.gz"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw = resp.read()
+    data = gzip.decompress(raw)
+    j = json.loads(data)
+    return pd.DataFrame(j, columns=_TORVIK_COLS[:len(j[0])])
 
 
 class KenPomFeatures(ExternalFeatureSource):
-    """KenPom/BartTorvik adjusted efficiency metrics.
+    """BartTorvik adjusted efficiency metrics from pre-tournament snapshots.
 
-    These are the gold standard for college basketball analytics — adjusted
-    offensive and defensive efficiency, tempo, and derived metrics like
-    BARTHAG (win probability vs average team).
+    Uses Selection Sunday snapshots from BartTorvik's Time Machine to ensure
+    no NCAA tournament results contaminate the adjusted metrics.
     """
 
     def name(self) -> str:
         return "kenpom"
 
     def fetch(self, data_dir: Path) -> None:
-        """Copy from kaggle_mm download to our external data dir."""
-        src = data_dir / "external" / "kaggle_mm" / "KenPom Barttorvik.csv"
-        if not src.exists():
-            raise FileNotFoundError(
-                f"KenPom data not found at {src}. "
-                "Download from: kaggle datasets download -d nishaanamin/march-madness-data"
-            )
+        """Fetch pre-tournament BartTorvik snapshots for all available years."""
         ext_dir = self.external_data_dir(data_dir)
-        import shutil
-        shutil.copy(src, ext_dir / "kenpom_barttorvik.csv")
+        ext_dir.mkdir(parents=True, exist_ok=True)
+
+        for season, date_str in sorted(_SELECTION_SUNDAYS.items()):
+            cache_path = ext_dir / f"barttorvik_{season}.csv"
+            if cache_path.exists():
+                print(f"    Cached: {season}")
+                continue
+            print(f"    Fetching {season} (Selection Sunday {date_str})...")
+            try:
+                df = _fetch_timemachine(date_str)
+                df["season"] = season
+                df.to_csv(cache_path, index=False)
+                time.sleep(1)
+            except Exception as e:
+                print(f"    Failed {season}: {e}")
 
     def build(self, data_dir: Path, gender: str = "M") -> pd.DataFrame:
-        print("  Building KenPom/BartTorvik features...")
+        print("  Building BartTorvik features (pre-tournament snapshots)...")
         if gender != "M":
             return pd.DataFrame(columns=["Season", "TeamID"])
-        csv_path = self.external_data_dir(data_dir) / "kenpom_barttorvik.csv"
-        df = pd.read_csv(csv_path)
-        df = _map_team_ids(df, data_dir)
 
-        # Drop rows we can't map
-        unmapped = df["TeamID"].isna().sum()
+        ext_dir = self.external_data_dir(data_dir)
+        name_to_id = _build_name_to_id(data_dir)
+
+        all_dfs = []
+        for season in sorted(_SELECTION_SUNDAYS.keys()):
+            cache_path = ext_dir / f"barttorvik_{season}.csv"
+            if not cache_path.exists():
+                continue
+            df = pd.read_csv(cache_path)
+            df["Season"] = season
+            all_dfs.append(df)
+
+        if not all_dfs:
+            # Fall back to old Kaggle data if no time machine data available
+            kaggle_path = ext_dir / "kenpom_barttorvik.csv"
+            if kaggle_path.exists():
+                print("    Warning: using Kaggle KenPom data (may contain post-tournament stats)")
+                return self._build_from_kaggle(kaggle_path, data_dir)
+            raise FileNotFoundError("No BartTorvik data found. Run fetch first.")
+
+        combined = pd.concat(all_dfs, ignore_index=True)
+        print(f"    Loaded {len(combined)} team-seasons from {len(all_dfs)} years")
+
+        # Map team names to TeamIDs
+        combined["_name"] = combined["team"].apply(
+            lambda x: NAME_OVERRIDES.get(str(x).strip(), str(x).strip())
+        )
+        combined["TeamID"] = combined["_name"].str.lower().str.strip().map(name_to_id)
+
+        unmapped = combined["TeamID"].isna().sum()
         if unmapped > 0:
             print(f"    Warning: {unmapped} rows couldn't be mapped to TeamID")
+        combined = combined.dropna(subset=["TeamID"])
+        combined["TeamID"] = combined["TeamID"].astype(int)
+
+        # Compute adjusted efficiency margin
+        combined["adj_em"] = combined["adjoe"] - combined["adjde"]
+
+        result = pd.DataFrame({
+            "Season": combined["Season"],
+            "TeamID": combined["TeamID"],
+            "kp_adj_tempo": combined["adjt"],
+            "kp_adj_off": combined["adjoe"],
+            "kp_adj_def": combined["adjde"],
+            "kp_adj_em": combined["adj_em"],
+            "kp_barthag": combined["barthag"],
+            "kp_elite_sos": combined["elite_sos"],
+            "kp_wab": combined["wab"],
+            "kp_sos": combined["sos"],
+        })
+
+        print(f"    Built {len(result)} rows, seasons {result['Season'].min()}-{result['Season'].max()}")
+        return result
+
+    def _build_from_kaggle(self, csv_path: Path, data_dir: Path) -> pd.DataFrame:
+        """Legacy builder from Kaggle dataset (post-tournament, for fallback only)."""
+        df = pd.read_csv(csv_path)
+        name_to_id = _build_name_to_id(data_dir)
+        df = df.copy()
+        df["_name"] = df["TEAM"].apply(
+            lambda x: NAME_OVERRIDES.get(x.strip(), x.strip())
+        )
+        df["TeamID"] = df["_name"].str.lower().str.strip().map(name_to_id)
+        df["Season"] = df["YEAR"]
         df = df.dropna(subset=["TeamID"])
         df["TeamID"] = df["TeamID"].astype(int)
 
-        # Select the most valuable adjusted features
-        result = pd.DataFrame({
+        return pd.DataFrame({
             "Season": df["Season"],
             "TeamID": df["TeamID"],
-            # KenPom adjusted metrics
             "kp_adj_tempo": df["KADJ T"],
             "kp_adj_off": df["KADJ O"],
             "kp_adj_def": df["KADJ D"],
             "kp_adj_em": df["KADJ EM"],
-            # BartTorvik adjusted metrics
-            "kp_badj_em": df["BADJ EM"],
-            "kp_badj_off": df["BADJ O"],
-            "kp_badj_def": df["BADJ D"],
             "kp_barthag": df["BARTHAG"],
-            # Four factors (offense)
-            "kp_efg_pct": df["EFG%"],
-            "kp_tov_pct": df["TOV%"],
-            "kp_oreb_pct": df["OREB%"],
-            "kp_ftr": df["FTR"],
-            # Four factors (defense)
-            "kp_efg_pct_d": df["EFG%D"],
-            "kp_tov_pct_d": df["TOV%D"],
-            "kp_dreb_pct": df["DREB%"],
-            "kp_ftrd": df["FTRD"],
-            # Talent and experience
-            "kp_talent": df["TALENT"],
-            "kp_experience": df["EXP"],
-            # Strength of schedule
             "kp_elite_sos": df["ELITE SOS"],
-            "kp_wab": df["WAB"],  # Wins Above Bubble
+            "kp_wab": df["WAB"],
+            "kp_sos": np.nan,
         })
-
-        return result
 
 
 class APPollFeatures(ExternalFeatureSource):
@@ -137,6 +238,10 @@ class APPollFeatures(ExternalFeatureSource):
             return pd.DataFrame(columns=["Season", "TeamID"])
         csv_path = self.external_data_dir(data_dir) / "ap_poll.csv"
         df = pd.read_csv(csv_path)
+
+        # Filter to pre-tournament weeks only (week 19 = post-conf-tourney, pre-NCAA)
+        # Weeks 20+ contain NCAA tournament results
+        df = df[df["WEEK"] <= 19].copy()
 
         name_to_id = _build_name_to_id(data_dir)
         df["_name"] = df["TEAM"].apply(
