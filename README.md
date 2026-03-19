@@ -4,7 +4,7 @@ ML pipeline to predict the 2026 NCAA March Madness tournament (men's and women's
 
 ## Approach
 
-Uses [AutoGluon](https://auto.gluon.ai/) with `best_quality` preset (2-level stacking, 10-fold bagging) to train an ensemble of gradient boosting, tree, and neural network models (LightGBM, XGBoost, CatBoost, RandomForest, ExtraTrees, NN_TORCH, FastAI). Optimized for **Brier score** (better calibration on lopsided matchups than log loss). GPU-accelerated for neural nets, CPU for tree models. Trained on men's tournament data from 2010-2024 (14 seasons, excluding 2020/COVID), validated on 2025.
+Uses [AutoGluon](https://auto.gluon.ai/) with custom regularized hyperparameters, 2-level stacking, and 10-fold bagging to train an ensemble of gradient boosting, tree, and neural network models (LightGBM, XGBoost, CatBoost, RandomForest, ExtraTrees, NN_TORCH, FastAI). Optimized for **Brier score** (better calibration on lopsided matchups than log loss). GPU-accelerated for neural nets, CPU for tree models. Trained on men's tournament data from 2010-2024 (14 seasons, excluding 2020/COVID), validated on 2025.
 
 Each matchup is modeled as a pairwise comparison: `[TeamA_features | TeamB_features | delta_features] -> P(TeamA wins)`. Delta features (A - B for every stat) give the model direct access to relative differences. Predictions are symmetry-enforced so `P(A>B) + P(B>A) = 1`. The same model is applied to women's tournament predictions (transfer learning -- features that don't exist for women become NaN, which AutoGluon handles natively).
 
