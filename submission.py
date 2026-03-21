@@ -57,6 +57,7 @@ def generate_submission(
     # Clip extreme probabilities (wide range for Brier score grading)
     final["Pred"] = final["Pred"].clip(0.01, 0.99)
 
+    output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     final.to_csv(output_path, index=False)
     print(f"Submission saved to {output_path} ({len(final)} rows)")

@@ -198,7 +198,7 @@ def format_bracket(bracket_df, slot_counts, team_names, n_sims):
     return "\n".join(lines)
 
 
-def run(submission=None, season=None, n_sims=10000, seed=42):
+def run(submission=None, season=None, n_sims=10000, seed=42, output_path=None):
     """Run bracket simulation with given parameters."""
     submission = submission or str(OUTPUT_DIR / "submission.csv")
     season = season or PREDICTION_SEASON
@@ -209,9 +209,12 @@ def run(submission=None, season=None, n_sims=10000, seed=42):
 
     print(format_bracket(bracket_df, slot_counts, team_names, n_sims))
 
-    out_path = OUTPUT_DIR / "bracket.csv"
+    out_path = Path(output_path) if output_path else OUTPUT_DIR / "bracket.csv"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     bracket_df.drop(columns=["_sort"], errors="ignore").to_csv(out_path, index=False)
     print(f"\nBracket saved to {out_path}")
+
+    return bracket_df, slot_counts, team_names
 
 
 def main():

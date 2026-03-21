@@ -4,7 +4,6 @@ Generates a bracket from model predictions, then scores it against
 actual outcomes using ESPN bracket scoring rules.
 """
 
-import argparse
 from collections import defaultdict
 
 import numpy as np
@@ -218,17 +217,5 @@ def run_backtest(season: int, n_sims: int = 10000, submission: str = None, tag: 
     return total
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Backtest bracket against actual results")
-    parser.add_argument("--season", type=int, default=2025, help="Season to backtest")
-    parser.add_argument("--n-sims", type=int, default=10000, help="Number of simulations")
-    parser.add_argument("--submission", type=str, default=None,
-                        help="Path to pre-built submission CSV (skips model prediction)")
-    parser.add_argument("--tag", type=str, default=None,
-                        help="Model tag to load (e.g. brier_ts, brier_no_ts)")
-    args = parser.parse_args()
-    run_backtest(args.season, args.n_sims, args.submission, args.tag)
-
-
 if __name__ == "__main__":
-    main()
+    print("Use 'python run.py backtest ...' instead. Run 'python run.py --help' for details.")

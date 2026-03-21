@@ -1,0 +1,37 @@
+# Default model configuration.
+# Create configs/<tag>.yaml to override for a specific model tag.
+
+features:
+  - massey
+  - seeds
+  - conference
+  - regular_season
+  - tourney_history
+  - rank_disagree
+  - seed_rank_delta
+  - close_games
+  - scoring_variance
+  - momentum
+  - tempo
+  - coach
+  - conf_tourney
+  - location
+  - travel
+  - rs_trajectory
+  - massey_trajectory
+  - kenpom
+  - ap_poll
+  - public_picks
+  - roster
+  - vegas
+
+training:
+  presets: best_quality
+  time_limit: 7200
+  num_bag_folds: 10
+  num_stack_levels: 2
+  train_seasons_start: 2010
+  validation_season: 2025
+
+prediction:
+  season: 2026

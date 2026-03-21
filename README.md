@@ -65,116 +65,133 @@ kaggle datasets download -d nishaanamin/march-madness-data
 unzip march-madness-data.zip -d data/external/kaggle_mm/
 ```
 
-3. For Vegas/ATS features, place the [Scottfree NCAAB historical odds](https://www.scottfreellc.com/shop/p/college-historical-odds-data) at `data/external/scottfree/ncaab.csv`. For the current prediction season, place Odds API data at `data/external/odds_api/ncaab_2026_odds_v2.csv` (see below for format details).
+3. For Vegas/ATS features, place the [Scottfree NCAAB historical odds](https://www.scottfreellc.com/shop/p/college-historical-odds-data) at `data/external/scottfree/ncaab.csv`. For the current season, run `python run.py data fetch --source odds --api-key YOUR_KEY`.
 
-4. For roster continuity and KenPom/BartTorvik features, the pipeline auto-fetches from barttorvik.com on first run (cached in `data/external/roster/` and `data/external/kenpom/`).
-
-### Odds API data format
-
-The Odds API CSV (`ncaab_2026_odds_v2.csv`) should have columns:
-
-```csv
-date,home_team,away_team,home_point_spread,away_point_spread,home_money_line,away_money_line,over_under
-```
-
-- `date`: ISO timestamp (`2025-11-04T23:30:00Z`) or bare date (`2025-11-05`)
-- `home_team`/`away_team`: Full team names with mascot (e.g., `Duke Blue Devils`)
-- Spreads: home perspective (negative = home favored)
-- Money lines: American format
-- `over_under`: Total points line
-
-The pipeline uses `MSeasons.csv` DayZero for precise date-to-DayNum conversion, matching odds rows to Kaggle game scores. It handles mixed date formats (full ISO timestamps use UTC-to-Eastern conversion; bare dates are used directly). Score joining uses three strategies: exact DayNum match, +/-1 day tolerance for timezone edge cases, and chronological pair matching as fallback.
+4. For roster continuity and KenPom/BartTorvik features, the pipeline auto-fetches from barttorvik.com on first run (cached in `data/external/roster/` and `data/external/kenpom/`). Or fetch explicitly: `python run.py data fetch --source kenpom roster`.
 
 ## Usage
 
-All commands go through `run.py`. Every command requires a `--tag` to support model versioning (models save to `AutogluonModels/<tag>/`, outputs to `output/submission_<tag>.csv`).
+**Everything goes through `run.py`.** Every command requires a `--tag` for model versioning. Models save to `AutogluonModels/<tag>/`, outputs to `output/<tag>/`.
 
-### Train
-
-```bash
-python run.py train --tag v1
-python run.py train --tag v1 --time-limit 10800   # 3 hours
-```
-
-Trains on men's historical tournament data (2010-2024, excluding 2020), validates on 2025. Default time limit is 2 hours (7200s). Longer training times generally improve results as AutoGluon explores more model configurations.
-
-### Predict (men's only)
+### Quick start
 
 ```bash
-python run.py predict --tag v1
+python run.py full --tag v1               # Train + predict + bracket (one shot)
 ```
 
-Generates `output/submission_v1.csv` with men's predictions.
-
-### Submit (men's + women's for Kaggle)
+### Individual commands
 
 ```bash
-python run.py submit --tag v1
+# Training
+python run.py train --tag v1              # Train (default 2hr time limit)
+python run.py train --tag v1 --time-limit 10800  # 3 hours
+
+# Predictions
+python run.py predict --tag v1            # Men's submission only
+python run.py submit --tag v1             # Men's + women's for Kaggle
+
+# Bracket simulation
+python run.py bracket --tag v1            # 10K sims (default)
+python run.py bracket --tag v1 --n-sims 100000
+
+# Betting
+python run.py bet --tag v1 --odds odds.csv
+python run.py bet --tag v1 --odds odds.csv --kelly 0.5 --fee 0.02 --bankroll 500
+python run.py futures --tag v1                    # Kalshi futures (live API)
+python run.py futures --tag v1 --from-csv cached.csv  # From cached data
+
+# Analysis
+python run.py backtest --tag v1 --season 2025
+python run.py analyze matchups --tag v1 --seeds 8v9
+python run.py analyze team --tag v1 --team Duke
+python run.py analyze confidence --tag v1
+
+# Data management
+python run.py data status                         # Show data freshness
+python run.py data fetch                          # Refresh all external data
+python run.py data fetch --source kenpom roster   # Refresh specific sources
+python run.py data fetch --source odds --api-key KEY  # Fetch Odds API data
 ```
 
-Generates `output/submission_v1.csv` with both men's and women's predictions, matching the format required by `SampleSubmissionStage2.csv`.
+### Output structure
 
-### Bracket simulation
+All outputs are organized by tag:
 
-```bash
-python run.py bracket --tag v1
-python run.py bracket --tag v1 --n-sims 50000
+```
+output/<tag>/
+    submission.csv      Kaggle-format predictions
+    bracket.csv         Monte Carlo bracket picks
+    bets.csv            Head-to-head bet sheet
+    futures_bets.csv    Kalshi futures bet sheet
 ```
 
-Runs Monte Carlo bracket simulation (default 10,000 sims) using the model's pairwise probabilities. Picks the team that advances from each slot most often. Outputs a formatted bracket to the console and saves `output/bracket.csv`.
+### Configuration
 
-### Backtest
+Model configuration is stored in YAML files in `configs/`:
 
-Score a model's bracket picks against actual tournament results using ESPN scoring rules (10/20/40/80/160/320 points per round):
+```yaml
+# configs/default.yaml (or configs/<tag>.yaml for per-model config)
+features:
+  - massey
+  - seeds
+  - vegas
+  # ... all 22 features
 
-```bash
-# Using a pre-built submission file
-python backtest.py --season 2025 --submission output/submission_v1.csv
-
-# Using a trained model directly
-python backtest.py --season 2025 --tag v1
+training:
+  presets: best_quality
+  time_limit: 7200
+  num_bag_folds: 10
+  num_stack_levels: 2
+  train_seasons_start: 2010
+  validation_season: 2025
 ```
 
-### Betting (Kelly Criterion)
+Create `configs/<tag>.yaml` to override defaults for a specific model. If no tag-specific config exists, `configs/default.yaml` is used. If that doesn't exist, hardcoded defaults in `config.py` apply.
 
-Generate optimal bet sizing from model predictions and prediction market odds:
+### Provenance tracking
 
-```bash
-python betting.py --odds odds.csv --tag v1
-python betting.py --odds odds.csv --tag v1 --kelly 0.5 --fee 0.02
-python betting.py --odds odds.csv --submission output/submission_v1.csv --bankroll 500
+Every trained model saves a `manifest.json` alongside it:
+
+```json
+{
+  "tag": "v1",
+  "trained_at": "2026-03-21T02:30:00+00:00",
+  "git_sha": "abc1234",
+  "features": ["massey", "seeds", ...],
+  "config": { ... },
+  "train_rows": 1200,
+  "val_rows": 134,
+  "val_brier": -0.182,
+  "data_files": { "MNCAATourneyCompactResults.csv": 1742567890123456789, ... }
+}
 ```
 
-**Odds CSV format** (prediction market style -- prices as implied probability %):
+When generating predictions, the pipeline warns if the current feature configuration doesn't match what the model was trained with.
+
+### Caching
+
+Feature matrices are cached to `.cache/` with content-aware cache keys. The cache key includes modification times of all source data files, so changing any underlying CSV automatically invalidates the cache. No need to manually bust the cache.
+
+### Bet sheet parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--kelly` | 0.25 | Fraction of full Kelly to use (quarter Kelly) |
+| `--min-edge` | 0.02 | Minimum edge to place a bet (2%) |
+| `--max-bet` | 0.05 | Maximum bet as fraction of bankroll (5%) |
+| `--bankroll` | 1000 | Starting bankroll in dollars |
+| `--fee` | 0.00 | Platform fee per contract (for head-to-head bets) |
+| `--total-cost` | 1.01 | YES + NO total cost (for futures, 101c = 1% vig) |
+
+### Odds CSV format (for `bet` command)
+
+Prediction market style -- prices as implied probability %:
+
 ```csv
 Season,TeamA,TeamB,PriceA,PriceB
 2026,1181,1369,95,8
 2026,1385,1314,60,42
 ```
-
-**Parameters:**
-- `--kelly` -- Fraction of full Kelly to use (default: 0.25 = quarter Kelly)
-- `--min-edge` -- Minimum edge to place a bet (default: 0.02 = 2%)
-- `--max-bet` -- Maximum bet as fraction of bankroll (default: 0.05 = 5%)
-- `--bankroll` -- Starting bankroll in dollars (default: $1000)
-- `--fee` -- Platform fee per contract in dollars (default: 0, e.g. 0.02 for 2c)
-- `--output` -- Save bet sheet to CSV
-
-### Futures betting
-
-The bracket simulation outputs per-team per-round advancement probabilities. Compare these against prediction market prices (e.g. Kalshi's `KXMARMADROUND` series) to identify positive-edge bets:
-
-```bash
-# Run large bracket simulation for stable probabilities
-python run.py bracket --tag v1 --n-sims 100000
-
-# Compare advancement probabilities against Kalshi market prices
-# (custom script — see output/advancement_probs_*.csv and output/futures_bets_*.csv)
-```
-
-## Configuration
-
-All tunable parameters are in `config.py`: train/validation/prediction seasons, AutoGluon presets, time limits, bagging folds, and enabled feature sources. Toggle features on/off by editing the `ENABLED_FEATURES` list.
 
 ## Adding new feature sources
 
@@ -193,42 +210,28 @@ class MyFeatures(FeatureSource):
 ```
 
 2. Register it in `features/__init__.py`
-3. Add the name to `ENABLED_FEATURES` in `config.py`
+3. Add the name to `configs/default.yaml` (or `config.py` ENABLED_FEATURES)
 
 For external data sources, extend `ExternalFeatureSource` instead -- this adds a `fetch()` method that downloads data to `data/external/<name>/` with automatic caching.
-
-## Example workflow
-
-```bash
-# Setup
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-
-# Train (2-hour run)
-python run.py train --tag v1
-
-# Generate Kaggle submission and bracket
-python run.py submit --tag v1
-python run.py bracket --tag v1 --n-sims 100000
-
-# Backtest against 2025 actuals
-python backtest.py --season 2025 --submission output/submission_v1.csv
-
-# Place bets on First Four games
-python betting.py --odds odds_first_four.csv --tag v1 --kelly 0.5 --fee 0.02
-```
 
 ## Project structure
 
 ```
-run.py                  CLI entry point (train/predict/bracket/submit)
-config.py               Tunable parameters and feature toggles
-pipeline.py             Feature matrix and matchup pair construction
-training.py             AutoGluon training with Brier score and regularization
-submission.py           Kaggle submission CSV generation
+run.py                  Unified CLI (train/predict/bracket/bet/futures/backtest/analyze/data/full)
+config.py               Constants, feature toggles, YAML config loading
+pipeline.py             Feature matrix construction with content-aware caching
+training.py             AutoGluon training with Brier score, regularization, provenance
+submission.py           Kaggle submission CSV generation with symmetry enforcement
 simulate.py             Monte Carlo bracket simulation
 backtest.py             ESPN-scored bracket backtesting
-betting.py              Kelly Criterion bet sheet generator
+betting.py              Kelly Criterion head-to-head bet sheet
+futures.py              Kalshi futures bet sheet (YES/NO positions)
+analyze.py              Matchup analysis, team profiles, confidence distributions
+fetch_odds.py           Odds API data fetcher with ESPN schedule cross-reference
+kelly.py                Shared Kelly Criterion calculations
+
+configs/
+  default.yaml          Default model configuration
 
 features/
   base.py               FeatureSource and ExternalFeatureSource base classes
@@ -249,7 +252,6 @@ features/
   kenpom.py             BartTorvik adjusted efficiency + AP Poll + public picks
   vegas.py              Vegas odds and ATS features (Scottfree + Odds API)
   roster.py             Roster continuity from BartTorvik player data
-  external_stubs.py     Documentation for implemented external sources
 ```
 
 ## Data sources
@@ -262,3 +264,4 @@ features/
 | Scottfree NCAAB odds | `data/external/scottfree/` | 2008-2025 | Historical closing lines (paid dataset) |
 | The Odds API | `data/external/odds_api/` | 2026 | Current season consensus closing lines |
 | BartTorvik roster data | `data/external/roster/` | 2008-2026 | Player stats for returning minutes %, auto-fetched |
+| Kalshi markets | Live API | 2026 | Tournament advancement futures |

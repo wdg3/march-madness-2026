@@ -85,7 +85,7 @@ _API_NAME_OVERRIDES = {
     "Sacramento St Hornets": "sacramento state",
     "San José St Spartans": "san jose st",
     "North Dakota St Bison": "n dakota st",
-    "South Dakota St Jackrabbits": "south dakota st",
+    "South Dakota St Jackrabbits": "south dakota st.",
     "UL Monroe Warhawks": "la-monroe",
     "UT Rio Grande Valley Vaqueros": "utrgv",
     "Florida Int'l Golden Panthers": "florida intl",
@@ -167,22 +167,19 @@ def _load_scottfree(data_dir: Path, name_to_id: dict) -> pd.DataFrame:
 
 
 def _load_odds_api(data_dir: Path, name_to_id: dict) -> pd.DataFrame:
-    """Load The Odds API 2026 data and join with Kaggle scores.
+    """Load The Odds API 2026 closing consensus data and join with Kaggle scores.
 
-    Score joining uses DayZero from MSeasons.csv for precise date-to-DayNum
-    conversion, with team-pair chronological matching as fallback for any
-    remaining date ambiguities.
+    Uses the clean closing consensus CSV from fetch_odds.py, which has pre-resolved
+    TeamIDs and validated consensus lines from US bookmakers. Score joining uses
+    DayZero from MSeasons.csv for date-to-DayNum conversion with ±1 day tolerance.
     """
-    # Prefer v2 (consensus closing lines where available)
-    csv_path = data_dir / "external" / "odds_api" / "ncaab_2026_odds_v2.csv"
-    if not csv_path.exists():
-        csv_path = data_dir / "external" / "odds_api" / "ncaab_2026_odds.csv"
+    csv_path = data_dir / "external" / "odds_api" / "ncaab_2026_closing.csv"
     if not csv_path.exists():
         return pd.DataFrame()
 
     odds = pd.read_csv(csv_path)
 
-    # Resolve API team names to TeamIDs
+    # Resolve any missing TeamIDs using name resolver
     def resolve_api(api_name):
         if api_name in _API_NAME_OVERRIDES:
             return name_to_id.get(_API_NAME_OVERRIDES[api_name].lower())
@@ -193,108 +190,64 @@ def _load_odds_api(data_dir: Path, name_to_id: dict) -> pd.DataFrame:
                 return name_to_id[attempt]
         return None
 
+    odds["_home_tid"] = odds.apply(
+        lambda r: r["home_team_id"] if pd.notna(r.get("home_team_id")) else resolve_api(r["home_team"]),
+        axis=1,
+    )
+    odds["_away_tid"] = odds.apply(
+        lambda r: r["away_team_id"] if pd.notna(r.get("away_team_id")) else resolve_api(r["away_team"]),
+        axis=1,
+    )
+
     # Get precise DayZero from MSeasons.csv
     seasons_df = pd.read_csv(data_dir / "MSeasons.csv")
     day_zero = pd.Timestamp(seasons_df[seasons_df["Season"] == 2026]["DayZero"].values[0])
 
-    odds["_home_tid"] = odds["home_team"].apply(resolve_api)
-    odds["_away_tid"] = odds["away_team"].apply(resolve_api)
-
-    # Build Kaggle score lookup by team pair, sorted chronologically
-    # Key: (min_tid, max_tid) -> list of (DayNum, {tid: (score, opp_score)})
+    # Build Kaggle score lookup by team pair
     rs_path = data_dir / "MRegularSeasonDetailedResults.csv"
-    pair_games = {}
+    dn_lookup = {}
     if rs_path.exists():
         rs = pd.read_csv(rs_path)
-        rs_2026 = rs[rs["Season"] == 2026].copy()
+        rs_2026 = rs[rs["Season"] == 2026]
         for _, r in rs_2026.iterrows():
             w_id, l_id = int(r["WTeamID"]), int(r["LTeamID"])
-            w_score, l_score = float(r["WScore"]), float(r["LScore"])
-            day = int(r["DayNum"])
             pair = (min(w_id, l_id), max(w_id, l_id))
-            entry = (day, {
-                w_id: (w_score, l_score),
-                l_id: (l_score, w_score),
-            })
-            pair_games.setdefault(pair, []).append(entry)
-        for pair in pair_games:
-            pair_games[pair].sort(key=lambda x: x[0])
+            scores = {w_id: (float(r["WScore"]), float(r["LScore"])),
+                      l_id: (float(r["LScore"]), float(r["WScore"]))}
+            dn_lookup[(int(r["DayNum"]), *pair)] = scores
 
-    # Also build a flat DayNum lookup for fast exact matching
-    dn_lookup = {}
-    for pair, games in pair_games.items():
-        for day, scores in games:
-            dn_lookup[(day, *pair)] = scores
-
-    # Compute approximate DayNum for each odds row
-    # Full ISO timestamps: UTC -> US/Eastern -> date -> DayNum (precise)
-    # Bare date strings: parse directly as date -> DayNum, then try ±1 as fallback
-    has_ts = odds["date"].str.contains("T", na=False)
+    # Parse dates and compute DayNums
     odds["_parsed_utc"] = pd.to_datetime(odds["date"], format="mixed", utc=True)
-
-    # For full timestamps, ET conversion gives the correct game date
-    odds["_DayNum"] = np.nan
-    if has_ts.any():
-        et_dates = odds.loc[has_ts, "_parsed_utc"].dt.tz_convert("US/Eastern").dt.date
-        odds.loc[has_ts, "_DayNum"] = (pd.to_datetime(et_dates) - day_zero).dt.days.values
-
-    # For bare dates, use the date string directly (it's the game date in some tz)
-    if (~has_ts).any():
-        bare_dates = pd.to_datetime(odds.loc[~has_ts, "date"].str[:10])
-        odds.loc[~has_ts, "_DayNum"] = (bare_dates - day_zero).dt.days.values
-
-    # Sort by date for chronological pair matching
-    odds = odds.sort_values("_parsed_utc").reset_index(drop=True)
-
-    # Track consumption index per pair for chronological fallback
-    pair_idx = {pair: 0 for pair in pair_games}
+    et_dates = odds["_parsed_utc"].dt.tz_convert("US/Eastern").dt.date
+    odds["_DayNum"] = (pd.to_datetime(et_dates) - day_zero).dt.days
 
     all_rows = []
-    n_exact = n_nearby = n_chrono = n_miss = 0
+    n_exact = n_nearby = n_miss = 0
 
     for _, row in odds.iterrows():
         htid, atid = row["_home_tid"], row["_away_tid"]
         if pd.isna(htid) or pd.isna(atid):
             continue
         htid, atid = int(htid), int(atid)
-        dn = int(row["_DayNum"]) if pd.notna(row["_DayNum"]) else None
+        dn = int(row["_DayNum"])
         pair = (min(htid, atid), max(htid, atid))
 
-        scores = {}
-
-        # Strategy 1: exact DayNum match
-        if dn is not None:
-            scores = dn_lookup.get((dn, *pair), {})
-            if scores:
-                n_exact += 1
-
-        # Strategy 2: try ±1 day (timezone edge cases)
-        if not scores and dn is not None:
+        # Find scores: exact DayNum, then ±1 day for timezone edge cases
+        scores = dn_lookup.get((dn, *pair), {})
+        if scores:
+            n_exact += 1
+        else:
             for offset in [-1, 1]:
                 scores = dn_lookup.get((dn + offset, *pair), {})
                 if scores:
                     n_nearby += 1
                     break
-
-        # Strategy 3: chronological pair matching
-        if not scores and pair in pair_games:
-            idx = pair_idx[pair]
-            candidates = pair_games[pair]
-            if idx < len(candidates):
-                _, scores = candidates[idx]
-                pair_idx[pair] = idx + 1
-                n_chrono += 1
-
-        if not scores:
-            n_miss += 1
+            else:
+                n_miss += 1
 
         h_score = scores[htid][0] if htid in scores else np.nan
         a_score = scores[atid][0] if atid in scores else np.nan
-
-        # Use parsed date for ordering
-        game_date = row["_parsed_utc"].tz_convert("US/Eastern").date() \
-            if pd.notna(row["_parsed_utc"]) else None
-        game_date = pd.Timestamp(game_date) if game_date else pd.NaT
+        game_date = pd.Timestamp(et_dates.iloc[row.name]) if row.name < len(et_dates) else pd.NaT
 
         all_rows.append({
             "Season": 2026, "TeamID": htid, "team_name": row["home_team"],
@@ -311,9 +264,9 @@ def _load_odds_api(data_dir: Path, name_to_id: dict) -> pd.DataFrame:
             "date": game_date, "score": a_score, "opp_score": h_score,
         })
 
-    total = n_exact + n_nearby + n_chrono + n_miss
-    print(f"    Score join: {n_exact} exact + {n_nearby} ±1day + {n_chrono} chrono + {n_miss} miss "
-          f"= {total} games ({(n_exact+n_nearby+n_chrono)/max(total,1)*100:.1f}% matched)")
+    total = n_exact + n_nearby + n_miss
+    print(f"    Score join: {n_exact} exact + {n_nearby} ±1day + {n_miss} miss "
+          f"= {total} games ({(n_exact+n_nearby)/max(total,1)*100:.1f}% matched)")
 
     games = pd.DataFrame(all_rows)
     games["won_game"] = (games["score"] > games["opp_score"]).astype(float)

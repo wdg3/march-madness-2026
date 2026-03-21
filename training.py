@@ -1,3 +1,8 @@
+import json
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 from autogluon.core.metrics import make_scorer
@@ -126,6 +131,59 @@ def _regularized_hyperparameters():
     }
 
 
+def _git_sha() -> str:
+    """Get current git commit SHA, or 'unknown' if not in a repo."""
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except Exception:
+        return "unknown"
+
+
+def _save_manifest(
+    output_dir: str,
+    tag: str,
+    train_rows: int,
+    val_rows: int,
+    val_brier: float,
+    feature_shape: tuple,
+    features: list[str],
+    config: dict,
+    data_dir: Path = None,
+):
+    """Save a provenance manifest alongside the trained model."""
+    data_files = {}
+    if data_dir:
+        for f in sorted(data_dir.glob("M*.csv")):
+            data_files[f.name] = f.stat().st_mtime_ns
+        ext_dir = data_dir / "external"
+        if ext_dir.exists():
+            for source_dir in sorted(ext_dir.iterdir()):
+                if source_dir.is_dir():
+                    for f in sorted(source_dir.glob("*.csv")):
+                        data_files[f"external/{source_dir.name}/{f.name}"] = f.stat().st_mtime_ns
+
+    manifest = {
+        "tag": tag,
+        "trained_at": datetime.now(timezone.utc).isoformat(),
+        "git_sha": _git_sha(),
+        "features": features,
+        "config": config,
+        "feature_shape": list(feature_shape),
+        "train_rows": train_rows,
+        "val_rows": val_rows,
+        "val_brier": val_brier,
+        "data_files": data_files,
+    }
+
+    manifest_path = Path(output_dir) / "manifest.json"
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2, default=str)
+    print(f"  Manifest saved to {manifest_path}")
+
+
 def train(
     train_data: pd.DataFrame,
     val_data: pd.DataFrame,
@@ -134,6 +192,10 @@ def train(
     num_bag_folds: int = 10,
     num_stack_levels: int = 2,
     output_dir: str = "./AutogluonModels",
+    tag: str = "",
+    config: dict = None,
+    features: list[str] = None,
+    data_dir: Path = None,
 ) -> TabularPredictor:
     """Train AutoGluon TabularPredictor optimized for Brier score."""
     print(f"Training on {len(train_data)} rows, validating on {len(val_data)} rows...")
@@ -156,6 +218,21 @@ def train(
     )
 
     print("\nLeaderboard:")
-    print(predictor.leaderboard(val_data))
+    lb = predictor.leaderboard(val_data)
+    print(lb)
+
+    # Save provenance manifest
+    val_brier = float(lb["score_val"].iloc[0]) if len(lb) > 0 else None
+    _save_manifest(
+        output_dir=output_dir,
+        tag=tag,
+        train_rows=len(train_data),
+        val_rows=len(val_data),
+        val_brier=val_brier,
+        feature_shape=(len(train_data), len(train_data.columns)),
+        features=features or [],
+        config=config or {},
+        data_dir=data_dir,
+    )
 
     return predictor

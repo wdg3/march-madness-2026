@@ -1,13 +1,55 @@
 from pathlib import Path
+import hashlib
 import pandas as pd
 from features import REGISTRY
 from features.base import ExternalFeatureSource
 from features.travel import ensure_geocoded, add_travel_to_matchups, add_travel_to_predictions
 
+CACHE_DIR = Path(".cache")
+
+
+def _cache_path(enabled: list[str], gender: str, data_dir: Path) -> Path:
+    """Return path to disk cache file, keyed on feature names AND data content.
+
+    The cache key includes modification times of all source data files so that
+    changing any underlying CSV automatically invalidates the cache.
+    """
+    parts = [gender, ",".join(sorted(enabled))]
+
+    # Include mtimes of external data directories used by enabled features
+    team_sources = [n for n in enabled if n != "travel"]
+    for name in sorted(team_sources):
+        source = REGISTRY[name]()
+        if isinstance(source, ExternalFeatureSource):
+            ext_dir = source.external_data_dir(data_dir)
+            if ext_dir.exists():
+                for f in sorted(ext_dir.glob("*.csv")):
+                    parts.append(f"{f.name}:{f.stat().st_mtime_ns}")
+
+    # Include core Kaggle data file mtimes
+    for f in sorted(data_dir.glob(f"{gender}*.csv")):
+        parts.append(f"{f.name}:{f.stat().st_mtime_ns}")
+
+    h = hashlib.md5("|".join(parts).encode()).hexdigest()[:12]
+    return CACHE_DIR / f"team_features_{gender}_{h}.pkl"
+
 
 def build_team_features(data_dir: Path, enabled: list[str], force_fetch: bool = False,
                         gender: str = "M") -> pd.DataFrame:
-    """Build per-team-per-season feature matrix by merging all enabled sources."""
+    """Build per-team-per-season feature matrix by merging all enabled sources.
+
+    Results are cached to disk — repeated calls with the same enabled list,
+    gender, and data content load from cache without rebuilding. The cache
+    automatically invalidates when source data files change. Use force_fetch=True
+    to bypass the cache and rebuild from scratch.
+    """
+    cache_file = _cache_path(enabled, gender, data_dir)
+
+    if not force_fetch and cache_file.exists():
+        cached = pd.read_pickle(cache_file)
+        print(f"Loaded cached {'women' if gender == 'W' else 'men'}'s team features {cached.shape} from {cache_file}")
+        return cached
+
     print(f"Building {'women' if gender == 'W' else 'men'}'s team features...")
     result = None
 
@@ -31,6 +73,12 @@ def build_team_features(data_dir: Path, enabled: list[str], force_fetch: bool = 
             result = result.merge(df, on=["Season", "TeamID"], how="left")
 
     print(f"  Team features shape: {result.shape}")
+
+    # Save to disk cache
+    CACHE_DIR.mkdir(exist_ok=True)
+    result.to_pickle(cache_file)
+    print(f"  Cached to {cache_file}")
+
     return result
 
 

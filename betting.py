@@ -3,10 +3,6 @@
 Takes model predictions and prediction market prices (implied probability %),
 computes optimal wager allocation using fractional Kelly sizing.
 
-Usage:
-    python betting.py --odds odds.csv --submission output/submission_brier_ts_3hr.csv
-    python betting.py --odds odds.csv --tag brier_ts_3hr
-
 Odds CSV format (prediction market style — prices as implied probability %):
     Season,TeamA,TeamB,PriceA,PriceB
     2026,1181,1369,95,8
@@ -16,24 +12,13 @@ Prices represent the market's implied probability for each team winning.
 They may sum to >100% (overround/vig) or exactly 100% (no-vig market).
 """
 
-import argparse
 from pathlib import Path
 
 import pandas as pd
 import numpy as np
 
 from config import DATA_DIR, OUTPUT_DIR, PREDICTION_SEASON
-
-
-def price_to_decimal(price_pct: float, fee: float = 0.0) -> float:
-    """Convert prediction market price (implied probability %) to decimal odds.
-
-    Args:
-        price_pct: Contract price as implied probability % (e.g. 52 means 52¢).
-        fee: Platform fee per contract in dollars (e.g. 0.02 for 2¢).
-    """
-    cost = price_pct / 100.0 + fee  # total cost per contract in dollars
-    return 1.0 / cost  # pays $1.00 when correct
+from kelly import kelly_fraction
 
 
 def load_model_probs(submission_path: str, season: int) -> dict:
@@ -50,18 +35,9 @@ def load_model_probs(submission_path: str, season: int) -> dict:
     return probs
 
 
-def kelly_fraction(p: float, decimal_odds: float) -> float:
-    """Compute Kelly fraction for a bet.
-
-    Returns the fraction of bankroll to wager (0 if no edge).
-    """
-    b = decimal_odds - 1  # net payout per unit wagered
-    if b <= 0:
-        return 0.0
-    edge = p * decimal_odds - 1
-    if edge <= 0:
-        return 0.0
-    return edge / b
+def _price_to_cost(price_pct: float, fee: float = 0.0) -> float:
+    """Convert prediction market price (implied probability %) to cost (0-1)."""
+    return price_pct / 100.0 + fee
 
 
 def generate_bet_sheet(
@@ -111,8 +87,8 @@ def generate_bet_sheet(
         team_b = int(row["TeamB"])
         price_a = float(row["PriceA"])
         price_b = float(row["PriceB"])
-        odds_a = price_to_decimal(price_a, fee)
-        odds_b = price_to_decimal(price_b, fee)
+        cost_a = _price_to_cost(price_a, fee)
+        cost_b = _price_to_cost(price_b, fee)
 
         p_a = probs.get((team_a, team_b))
         if p_a is None:
@@ -120,15 +96,16 @@ def generate_bet_sheet(
         p_b = 1 - p_a
 
         # Check both sides of the bet
-        for team, p, odds, opp, market_price in [
-            (team_a, p_a, odds_a, team_b, price_a),
-            (team_b, p_b, odds_b, team_a, price_b),
+        for team, p, cost, opp, market_price in [
+            (team_a, p_a, cost_a, team_b, price_a),
+            (team_b, p_b, cost_b, team_a, price_b),
         ]:
-            edge = p * odds - 1
+            edge = p / cost - 1
             if edge < min_edge:
                 continue
 
-            kf = kelly_fraction(p, odds) * kelly_frac
+            odds = 1.0 / cost
+            kf = kelly_fraction(p, cost) * kelly_frac
             bet_pct = min(kf, max_bet_pct)
             wager = round(bankroll * bet_pct, 2)
             payout = round(wager * odds, 2)
@@ -186,49 +163,5 @@ def print_bet_sheet(bet_df: pd.DataFrame, bankroll: float):
     print(f"  EV/wagered: {total_ev/total_wagered*100:.1f}%" if total_wagered > 0 else "")
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Generate Kelly Criterion bet sheet from model predictions and book odds",
-    )
-    parser.add_argument("--odds", required=True, help="Path to odds CSV")
-    parser.add_argument("--submission", help="Path to submission CSV")
-    parser.add_argument("--tag", help="Model tag (uses output/submission_<tag>.csv)")
-    parser.add_argument("--season", type=int, default=PREDICTION_SEASON)
-    parser.add_argument("--bankroll", type=float, default=1000.0,
-                        help="Starting bankroll (default: $1000)")
-    parser.add_argument("--kelly", type=float, default=0.25,
-                        help="Kelly fraction (default: 0.25 = quarter Kelly)")
-    parser.add_argument("--min-edge", type=float, default=0.02,
-                        help="Minimum edge to bet (default: 0.02 = 2%%)")
-    parser.add_argument("--max-bet", type=float, default=0.05,
-                        help="Max bet as fraction of bankroll (default: 0.05 = 5%%)")
-    parser.add_argument("--fee", type=float, default=0.0,
-                        help="Platform fee per contract in dollars (default: 0.00)")
-    parser.add_argument("--output", help="Save bet sheet to CSV")
-    args = parser.parse_args()
-
-    if args.submission:
-        submission = args.submission
-    elif args.tag:
-        submission = str(OUTPUT_DIR / f"submission_{args.tag}.csv")
-    else:
-        parser.error("Must provide --submission or --tag")
-
-    bet_df = generate_bet_sheet(
-        args.odds, submission, args.season,
-        kelly_frac=args.kelly,
-        min_edge=args.min_edge,
-        max_bet_pct=args.max_bet,
-        bankroll=args.bankroll,
-        fee=args.fee,
-    )
-
-    print_bet_sheet(bet_df, args.bankroll)
-
-    if args.output and len(bet_df) > 0:
-        bet_df.to_csv(args.output, index=False)
-        print(f"\nBet sheet saved to {args.output}")
-
-
 if __name__ == "__main__":
-    main()
+    print("Use 'python run.py bet ...' instead. Run 'python run.py --help' for details.")
