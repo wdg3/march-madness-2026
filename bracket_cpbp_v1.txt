@@ -1,0 +1,44 @@
+
+2026 NCAA TOURNAMENT — Composable PBP v1 (player-level)
+=======================================================
+
+         WEST (W)                                                                                EAST (X)
+
+Duke 97%                                                                                                                             98% Florida
+                  Duke 94%                                                                                         95% Florida
+TCU 83%                                                                                                                                 97% Iowa
+                                    Duke 90%                                                     92% Florida
+St John's 97%                                                                                                                     90% McNeese St
+                  Louisville 90%                                                                                  94% Illinois
+Kansas 98%                                                                                                                          97% Nebraska
+                                                      Duke 85%                 88% Florida
+Michigan St 97%                                                                                                                     98% Illinois
+                  Connecticut 83%                                                                                  93% Houston
+Louisville 97%                                                                                                                96% North Carolina
+                                    Connecticut 65%                                              89% Houston
+UCLA 98%                                                                                                                           52% Texas A&M
+                  St John's 82%                                                                                 58% McNeese St
+Connecticut 96%                                                                                                                      97% Houston
+
+
+                                                      Duke 79%  >>>  Arizona 72%  <<<  81% Arizona
+
+         SOUTH (Y)                                                                              MIDWEST (Z)
+
+Michigan 97%                                                                                                                         98% Arizona
+                  Michigan 95%                                                                                     94% Arizona
+Georgia 94%                                                                                                                          76% Utah St
+                                    Michigan 90%                                                 89% Arizona
+Texas Tech 67%                                                                                                                     98% Wisconsin
+                  Tennessee 88%                                                                                        92% BYU
+Alabama 95%                                                                                                                         97% Arkansas
+                                                      Iowa St 50%              86% Arizona
+Virginia 97%                                                                                                                         97% Gonzaga
+                  Iowa St 94%                                                                                     93% Miami FL
+Tennessee 90%                                                                                                                            97% BYU
+                                    Iowa St 90%                                                      89% BYU
+Kentucky 96%                                                                                                                        97% Miami FL
+                  Alabama 90%                                                                                     94% Arkansas
+Iowa St 97%                                                                                                                           97% Purdue
+
+

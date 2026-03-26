@@ -1,0 +1,54 @@
+# v7: v6 + PBP deep model features (season embeddings + matchup prediction).
+# Key changes from v6:
+#   - Added pbp_nn: 64-dim season embeddings from the play-by-play deep model
+#     plus pbp_pred matchup-level prediction. The PBP model encodes individual
+#     plays → games → seasons → matchup predictions, giving the ensemble
+#     access to play-level signal (lineup chemistry, game flow, etc.)
+#   - Requires a trained PBP model in data/external/pbp_model/
+
+features:
+  - massey
+  - conference
+  - regular_season
+  - tourney_history
+  - rank_disagree
+  - seed_rank_delta
+  - close_games
+  - scoring_variance
+  - momentum
+  - tempo
+  - coach
+  - conf_tourney
+  - location
+  - travel
+  - rs_trajectory
+  - massey_trajectory
+  - kenpom
+  - ap_poll
+  - public_picks
+  - roster
+  - player_impact
+  - player_nn
+  - pbp_nn
+  - vegas
+
+training:
+  presets: best_quality
+  time_limit: 14400
+  num_bag_folds: 5
+  num_stack_levels: 1
+  train_seasons_start: 2024
+  train_seasons_end: 2026
+  validation_season: 2025
+  eval_metric: log_loss
+  use_seed_prior: true
+  include_regular_season: true
+  include_conf_tournament: true
+  time_decay_half_life: 5.0
+  game_weights:
+    tournament: 1.0
+    conf_tournament: 0.5
+    regular_season: 0.15
+
+prediction:
+  season: 2026

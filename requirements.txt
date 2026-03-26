@@ -8,3 +8,5 @@ lightgbm
 pandas>=2.2.3
 numpy<2
 pyyaml
+cbbd
+requests

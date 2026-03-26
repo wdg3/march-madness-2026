@@ -23,6 +23,13 @@ brier_scorer = make_scorer(
 )
 
 
+def _get_eval_metric(name: str):
+    """Return the AutoGluon eval metric for the given name."""
+    if name == "log_loss":
+        return "log_loss"
+    return brier_scorer
+
+
 def _regularized_hyperparameters():
     """Hyperparameters tuned for small tournament datasets with high feature counts.
 
@@ -32,10 +39,12 @@ def _regularized_hyperparameters():
     - Feature subsampling (colsample_bytree) so no single noisy feature
       dominates every tree
     - Higher min_child_samples/min_child_weight to avoid leaf overfitting
+
+    5 model types: LightGBM, XGBoost, CatBoost, RandomForest, NeuralNet.
+    Single config per type to avoid correlated models inflating ensemble weight.
     """
     return {
         "GBM": [
-            # LightGBM config 1: moderate depth, strong regularization
             {
                 "max_depth": 6,
                 "num_leaves": 31,
@@ -45,19 +54,6 @@ def _regularized_hyperparameters():
                 "colsample_bytree": 0.7,
                 "learning_rate": 0.05,
                 "n_estimators": 2000,
-                "ag_args_fit": {"num_gpus": 0},
-            },
-            # LightGBM config 2: shallower, more aggressive subsampling
-            {
-                "max_depth": 4,
-                "num_leaves": 15,
-                "reg_alpha": 0.5,
-                "reg_lambda": 2.0,
-                "min_child_samples": 30,
-                "colsample_bytree": 0.5,
-                "subsample": 0.8,
-                "learning_rate": 0.03,
-                "n_estimators": 3000,
                 "ag_args_fit": {"num_gpus": 0},
             },
         ],
@@ -72,17 +68,6 @@ def _regularized_hyperparameters():
                 "n_estimators": 2000,
                 "ag_args_fit": {"num_gpus": 0},
             },
-            {
-                "max_depth": 3,
-                "reg_alpha": 0.5,
-                "reg_lambda": 2.0,
-                "colsample_bytree": 0.5,
-                "subsample": 0.8,
-                "min_child_weight": 10,
-                "learning_rate": 0.03,
-                "n_estimators": 3000,
-                "ag_args_fit": {"num_gpus": 0},
-            },
         ],
         "CAT": [
             {
@@ -90,7 +75,7 @@ def _regularized_hyperparameters():
                 "l2_leaf_reg": 3.0,
                 "learning_rate": 0.05,
                 "iterations": 2000,
-                "rsm": 0.7,  # CatBoost's colsample_bytree equivalent
+                "rsm": 0.7,
                 "ag_args_fit": {"num_gpus": 0},
             },
         ],
@@ -101,23 +86,6 @@ def _regularized_hyperparameters():
                 "max_features": 0.7,
                 "n_estimators": 500,
                 "ag_args_fit": {"num_gpus": 0},
-            },
-        ],
-        "XT": [
-            {
-                "max_depth": 8,
-                "min_samples_leaf": 10,
-                "max_features": 0.7,
-                "n_estimators": 500,
-                "ag_args_fit": {"num_gpus": 0},
-            },
-        ],
-        "NN_TORCH": [
-            {
-                "num_epochs": 200,
-                "weight_decay": 1e-3,
-                "dropout_prob": 0.3,
-                "ag_args_fit": {"num_gpus": 1},
             },
         ],
         "FASTAI": [
@@ -196,14 +164,32 @@ def train(
     config: dict = None,
     features: list[str] = None,
     data_dir: Path = None,
+    eval_metric: str = "brier_score",
 ) -> TabularPredictor:
-    """Train AutoGluon TabularPredictor optimized for Brier score."""
+    """Train AutoGluon TabularPredictor with configurable eval metric.
+
+    Args:
+        train_data: Training DataFrame. May include a 'sample_weight' column for
+            per-row importance weighting (time decay * game type).
+        val_data: Validation DataFrame (full season, equal weights for model selection).
+        eval_metric: 'brier_score' or 'log_loss'. Log loss provides sharper gradients
+            for model selection; Brier score matches Kaggle's grading.
+    """
     print(f"Training on {len(train_data)} rows, validating on {len(val_data)} rows...")
+    print(f"  Eval metric: {eval_metric}")
+
+    has_weights = "sample_weight" in train_data.columns
+    if has_weights:
+        print(f"  Using sample weights (range: [{train_data['sample_weight'].min():.4f}, "
+              f"{train_data['sample_weight'].max():.4f}])")
+
+    metric = _get_eval_metric(eval_metric)
 
     predictor = TabularPredictor(
         label="Label",
-        eval_metric=brier_scorer,
+        eval_metric=metric,
         path=output_dir,
+        sample_weight="sample_weight" if has_weights else None,
     ).fit(
         train_data=train_data,
         tuning_data=val_data,
@@ -221,7 +207,6 @@ def train(
     lb = predictor.leaderboard(val_data)
     print(lb)
 
-    # Save provenance manifest
     val_brier = float(lb["score_val"].iloc[0]) if len(lb) > 0 else None
     _save_manifest(
         output_dir=output_dir,

@@ -1,0 +1,22 @@
+R64: 27/32 = 270 pts
+R32: 11/16 = 220 pts
+TOTAL: 490 pts
+
+Misses:
+  R1X5: picked McNeese St           actual Vanderbilt
+  R1X6: picked North Carolina       actual VCU
+  R1Y8: picked Georgia              actual St Louis
+  R1Z5: picked Wisconsin            actual High Point
+  R1Z6: picked BYU                  actual Texas
+  R2W3: picked Louisville           actual Michigan St
+  R2X1: picked Florida              actual Iowa
+  R2X4: picked McNeese St           actual Nebraska
+  R2Z2: picked Miami FL             actual Purdue
+  R2Z3: picked BYU                  actual Texas
+
+Model                                    R64      R32    Total
+=================================================================
+PBP v3 (name fix, MC)                  26/32    14/16      540
+PBP v3 (greedy)                        26/32    13/16      520
+v7 (AG + PBP emb, MC)                  26/32    12/16      500
+Composable PBP v1 (MC)                 27/32    11/16      490

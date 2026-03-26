@@ -83,9 +83,12 @@ def _verify_manifest(tag: str, features: list[str]):
 
 
 def cmd_train(args):
-    """Train the model on men's historical tournament data."""
-    from pipeline import build_team_features, build_matchups
+    """Train the model on men's historical data."""
+    import json as _json
+    from autogluon.tabular import TabularPredictor as _TabularPredictor
+    from pipeline import build_team_features, build_training_data, build_matchups
     from features.travel import ensure_geocoded
+    from seed_prior import SeedPrior
     from training import train
 
     cfg = load_config(args.tag)
@@ -102,16 +105,60 @@ def cmd_train(args):
     if use_travel:
         ensure_geocoded(DATA_DIR)
 
-    tourney = pd.read_csv(DATA_DIR / "MNCAATourneyCompactResults.csv")
-    matchups = build_matchups(team_features, tourney, data_dir=DATA_DIR, travel=use_travel)
+    use_player_nn = "player_nn" in features
+    if use_player_nn:
+        from models.player_train import train_player_model
+        ckpt = DATA_DIR / "external" / "player_impact" / "player_nn.pt"
+        if not ckpt.exists():
+            val_season_cfg = train_cfg.get("validation_season", VALIDATION_SEASON)
+            train_player_model(DATA_DIR, max_train_season=val_season_cfg - 1,
+                               val_season=val_season_cfg)
 
     start_season = train_cfg.get("train_seasons_start", 2010)
     end_season = train_cfg.get("train_seasons_end", TRAIN_SEASONS_END)
     val_season = train_cfg.get("validation_season", VALIDATION_SEASON)
 
-    matchups = matchups[matchups["Season"] >= start_season]
-    train_data = matchups[matchups["Season"] < end_season].copy()
-    val_data = matchups[matchups["Season"] == val_season].copy()
+    # Build matchup rows from all game sources
+    use_pbp_nn = "pbp_nn" in features
+    print(f"\nBuilding matchup data (seasons {start_season}-{end_season})...")
+    all_data = build_training_data(
+        team_features, DATA_DIR,
+        travel=use_travel,
+        player_nn=use_player_nn,
+        pbp_nn=use_pbp_nn,
+        include_regular_season=train_cfg.get("include_regular_season", True),
+        include_conf_tournament=train_cfg.get("include_conf_tournament", True),
+        time_decay_half_life=train_cfg.get("time_decay_half_life", 5.0),
+        game_weights=train_cfg.get("game_weights"),
+    )
+    all_data = all_data[all_data["Season"] >= start_season]
+
+    # Drop rows without PBP embeddings if pbp_nn is enabled
+    if use_pbp_nn and "pbp_mu_0" in all_data.columns:
+        before = len(all_data)
+        all_data = all_data[all_data["pbp_mu_0"].notna()].reset_index(drop=True)
+        print(f"  PBP filter: {before} → {len(all_data)} rows "
+              f"(dropped {before - len(all_data)} without embeddings)")
+
+    # Split: validation = tournament games from val season
+    #        training = everything else (regular season + conf tourney for all seasons)
+    is_val = (all_data["Season"] == val_season) & (all_data["is_ncaa_tournament"] == 1)
+    val_data = all_data[is_val].copy()
+    val_data["sample_weight"] = 1.0
+    train_data = all_data[~is_val & (all_data["Season"] <= end_season)].copy()
+
+    # Summary
+    print(f"\n  {'='*50}")
+    print(f"  DATASET SUMMARY")
+    print(f"  {'='*50}")
+    print(f"  Training:   {len(train_data):>7,} rows")
+    for s in sorted(train_data["Season"].unique()):
+        n = len(train_data[train_data["Season"] == s])
+        print(f"    {s}: {n:>6,} rows")
+    print(f"  Validation: {len(val_data):>7,} rows "
+          f"({val_season} NCAA tournament)")
+    print(f"  Features:   {len([c for c in train_data.columns if c not in ('Season','TeamID_A','TeamID_B','Label','sample_weight','is_ncaa_tournament','is_conf_tournament','_game_weight')]):>7,} columns")
+    print(f"  {'='*50}\n")
 
     drop_cols = ["Season", "TeamID_A", "TeamID_B"]
     train_data = train_data.drop(columns=drop_cols)
@@ -122,7 +169,7 @@ def cmd_train(args):
     num_bag_folds = train_cfg.get("num_bag_folds", AG_NUM_BAG_FOLDS)
     num_stack_levels = train_cfg.get("num_stack_levels", AG_NUM_STACK_LEVELS)
 
-    train(
+    predictor = train(
         train_data, val_data,
         presets=presets,
         time_limit=time_limit,
@@ -133,11 +180,65 @@ def cmd_train(args):
         config=cfg,
         features=features,
         data_dir=DATA_DIR,
+        eval_metric=train_cfg.get("eval_metric", "brier_score"),
     )
+
+    # Tune seed prior alpha on validation tournament games
+    if train_cfg.get("use_seed_prior", True):
+        print("\nTuning seed prior...")
+        prior = SeedPrior(DATA_DIR, max_season=val_season)
+
+        # Get model predictions on val tournament games
+        tourney = pd.read_csv(DATA_DIR / "MNCAATourneyCompactResults.csv")
+        val_tourney = build_matchups(team_features, tourney, data_dir=DATA_DIR, travel=use_travel, player_nn=use_player_nn, pbp_nn=use_pbp_nn)
+        val_tourney["is_ncaa_tournament"] = 1
+        val_tourney["is_conf_tournament"] = 0
+        val_tourney = val_tourney[val_tourney["Season"] == val_season].copy()
+
+        val_seasons = val_tourney["Season"].values
+        val_team_a = val_tourney["TeamID_A"].values
+        val_team_b = val_tourney["TeamID_B"].values
+
+        val_X = val_tourney.drop(columns=["Season", "TeamID_A", "TeamID_B", "Label"])
+        model_probs = predictor.predict_proba(val_X)[1].values
+        actuals = val_tourney["Label"].values
+
+        seed_a = [prior.get_seeds(int(s), int(a), int(b))[0] or 8
+                  for s, a, b in zip(val_seasons, val_team_a, val_team_b)]
+        seed_b = [prior.get_seeds(int(s), int(a), int(b))[1] or 8
+                  for s, a, b in zip(val_seasons, val_team_a, val_team_b)]
+
+        alpha = prior.tune_alpha(model_probs, seed_a, seed_b, actuals)
+
+        # Save alpha alongside model
+        alpha_path = out_dir / "seed_prior_alpha.json"
+        with open(alpha_path, "w") as f:
+            _json.dump({"alpha": alpha, "val_season": val_season}, f)
+        print(f"  Alpha saved to {alpha_path}")
+
     print(f"\nTraining complete! Model saved to {out_dir}")
 
 
 # ── Predict ──────────────────────────────────────────────────────────────────
+
+
+def _load_seed_prior(tag: str):
+    """Load seed prior with tuned alpha for a trained model, or None."""
+    import json as _json
+    from seed_prior import SeedPrior
+
+    alpha_path = model_dir(tag) / "seed_prior_alpha.json"
+    if not alpha_path.exists():
+        return None
+
+    with open(alpha_path) as f:
+        meta = _json.load(f)
+
+    # Build prior using all data up to prediction season (no contamination)
+    prior = SeedPrior(DATA_DIR, max_season=PREDICTION_SEASON + 1)
+    prior._alpha = meta["alpha"]
+    print(f"  Loaded seed prior (α={meta['alpha']:.2f})")
+    return prior
 
 
 def cmd_predict(args):
@@ -151,21 +252,26 @@ def cmd_predict(args):
     features = cfg.get("features", ENABLED_FEATURES)
     _verify_manifest(args.tag, features)
 
-    predictor = TabularPredictor.load(str(model_dir(args.tag)))
+    mdir = model_dir(args.tag)
+    predictor = TabularPredictor.load(str(mdir))
+    seed_prior = _load_seed_prior(args.tag)
     team_features = build_team_features(DATA_DIR, features, gender="M")
 
     use_travel = "travel" in features
     if use_travel:
         ensure_geocoded(DATA_DIR)
+    use_player_nn = "player_nn" in features
+    use_pbp_nn = "pbp_nn" in features
 
     pred_pairs = build_prediction_pairs(
         team_features, PREDICTION_SEASON, data_dir=DATA_DIR, travel=use_travel,
+        player_nn=use_player_nn, pbp_nn=use_pbp_nn,
     )
 
     sample_sub = pd.read_csv(DATA_DIR / "SampleSubmissionStage2.csv")
     out_dir = tag_output_dir(args.tag)
     output_path = out_dir / "submission.csv"
-    generate_submission(predictor, pred_pairs, sample_sub, output_path)
+    generate_submission(predictor, pred_pairs, sample_sub, output_path, seed_prior=seed_prior)
     print(f"\nMen's submission saved to {output_path}")
 
 
@@ -183,8 +289,12 @@ def cmd_submit(args):
     features = cfg.get("features", ENABLED_FEATURES)
     _verify_manifest(args.tag, features)
 
-    predictor = TabularPredictor.load(str(model_dir(args.tag)))
+    mdir = model_dir(args.tag)
+    predictor = TabularPredictor.load(str(mdir))
+    seed_prior = _load_seed_prior(args.tag)
     use_travel = "travel" in features
+    use_player_nn = "player_nn" in features
+    use_pbp_nn = "pbp_nn" in features
 
     # Men's predictions
     print("=" * 60)
@@ -195,6 +305,7 @@ def cmd_submit(args):
         ensure_geocoded(DATA_DIR)
     men_pairs = build_prediction_pairs(
         men_features, PREDICTION_SEASON, data_dir=DATA_DIR, travel=use_travel,
+        player_nn=use_player_nn, pbp_nn=use_pbp_nn,
     )
 
     # Women's predictions
@@ -214,7 +325,7 @@ def cmd_submit(args):
     sample_sub = pd.read_csv(DATA_DIR / "SampleSubmissionStage2.csv")
     out_dir = tag_output_dir(args.tag)
     output_path = out_dir / "submission.csv"
-    generate_submission(predictor, all_pairs, sample_sub, output_path)
+    generate_submission(predictor, all_pairs, sample_sub, output_path, seed_prior=seed_prior)
 
     sub = pd.read_csv(output_path)
     ids = sub["ID"].str.split("_", expand=True)
@@ -293,7 +404,7 @@ def cmd_futures(args):
     name_to_id = build_name_to_id(DATA_DIR)
 
     print(f"Running {args.n_sims:,} bracket simulations...")
-    adv_probs, team_names = compute_advancement_probs(
+    adv_probs, team_names, tourney_teams = compute_advancement_probs(
         submission, args.season, DATA_DIR, args.n_sims, seed=42
     )
 
@@ -304,6 +415,8 @@ def cmd_futures(args):
         min_edge=args.min_edge,
         max_bet_pct=args.max_bet,
         bankroll=args.bankroll,
+        fee=args.fee,
+        tourney_teams=tourney_teams,
     )
 
     print_bet_sheet(df, args.bankroll)
@@ -336,7 +449,7 @@ def cmd_backtest(args):
 
 def cmd_analyze(args):
     """Matchup analysis and diagnostics."""
-    from analyze import cmd_matchups, cmd_team, cmd_confidence
+    from analyze import cmd_matchups, cmd_team, cmd_confidence, cmd_importance
 
     if args.analyze_cmd == "matchups":
         cmd_matchups(args)
@@ -344,8 +457,10 @@ def cmd_analyze(args):
         cmd_team(args)
     elif args.analyze_cmd == "confidence":
         cmd_confidence(args)
+    elif args.analyze_cmd == "importance":
+        cmd_importance(args)
     else:
-        print("Usage: python run.py analyze {matchups|team|confidence} --tag TAG ...")
+        print("Usage: python run.py analyze {matchups|team|confidence|importance} --tag TAG ...")
 
 
 # ── Data ─────────────────────────────────────────────────────────────────────
@@ -355,10 +470,12 @@ def cmd_data(args):
     """Data management: fetch and status."""
     if args.data_cmd == "fetch":
         _cmd_data_fetch(args)
+    elif args.data_cmd == "fetch-pbp":
+        _cmd_data_fetch_pbp(args)
     elif args.data_cmd == "status":
         _cmd_data_status(args)
     else:
-        print("Usage: python run.py data {fetch|status}")
+        print("Usage: python run.py data {fetch|fetch-pbp|status}")
 
 
 def _cmd_data_fetch(args):
@@ -384,6 +501,28 @@ def _cmd_data_fetch(args):
             fetch_odds(args.api_key, resume=getattr(args, "resume", False))
         elif sources and "odds" in sources:
             print("Error: --api-key required for odds fetch")
+
+
+def _cmd_data_fetch_pbp(args):
+    """Fetch play-by-play data from CBBD API."""
+    from features.pbp import fetch_all, fetch_team_plays, fetch_status
+
+    api_key = args.api_key
+    if not api_key:
+        print("Error: --api-key required for PBP fetch")
+        return
+
+    if args.team:
+        # Single team fetch (for testing)
+        plays = fetch_team_plays(api_key, DATA_DIR, args.season, args.team)
+        n_floor = sum(1 for p in plays if p.get("onFloor") and len(p["onFloor"]) >= 10)
+        print(f"{args.team} {args.season}: {len(plays)} plays ({n_floor} with lineup)")
+    else:
+        # Full fetch
+        fetch_all(api_key, DATA_DIR, rate_limit=args.rate_limit)
+
+    print()
+    fetch_status(DATA_DIR)
 
 
 def _cmd_data_status(args):
@@ -431,6 +570,191 @@ def _cmd_data_status(args):
             print(f"\n  Trained models:      {', '.join(tags)}")
         else:
             print(f"\n  Trained models:      none")
+
+
+# ── Player NN ────────────────────────────────────────────────────────────────
+
+
+def cmd_player_nn(args):
+    """Train or inspect the player matchup neural net."""
+    if args.pnn_cmd == "train":
+        _cmd_pnn_train(args)
+    elif args.pnn_cmd == "test":
+        _cmd_pnn_test(args)
+    elif args.pnn_cmd == "submit":
+        _cmd_pnn_submit(args)
+    elif args.pnn_cmd == "bracket":
+        _cmd_pnn_bracket(args)
+    else:
+        print("Usage: python run.py player-nn {train|test|submit|bracket}")
+
+
+def _cmd_pnn_train(args):
+    """Train the player matchup model."""
+    from models.player_train import train_player_model
+
+    train_player_model(
+        DATA_DIR,
+        max_train_season=args.val_season - 1,
+        val_season=args.val_season,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        device=args.device,
+        time_limit=args.time_limit,
+    )
+
+
+def _cmd_pnn_test(args):
+    """Test the trained model: show embeddings and matchup predictions."""
+    from models.player_train import PlayerNNExtractor
+    import numpy as np
+
+    ext = PlayerNNExtractor(DATA_DIR, device=args.device)
+
+    # Team embeddings summary
+    emb = ext.team_embeddings(season=args.season)
+    teams_df = pd.read_csv(DATA_DIR / "MTeams.csv")
+    emb = emb.merge(teams_df[["TeamID", "TeamName"]], on="TeamID")
+    emb_cols = [c for c in emb.columns if c.startswith("pnn_emb_")]
+    print(f"Team embeddings for {args.season}: {len(emb)} teams × {len(emb_cols)} dims")
+
+    # Show top teams by embedding norm (proxy for "model thinks this team is distinctive")
+    emb["emb_norm"] = np.sqrt((emb[emb_cols] ** 2).sum(axis=1))
+    print(f"\nTop 10 by embedding magnitude:")
+    for _, r in emb.nlargest(10, "emb_norm").iterrows():
+        print(f"  {r['TeamName']:25s} ‖emb‖={r['emb_norm']:.3f}")
+
+    # Sample matchup predictions
+    seeds = pd.read_csv(DATA_DIR / "MNCAATourneySeeds.csv")
+    seeds_yr = seeds[seeds["Season"] == args.season].copy()
+    seeds_yr["seed_num"] = seeds_yr["Seed"].str.extract(r"(\d+)").astype(int)
+    seeds_yr = seeds_yr.merge(teams_df[["TeamID", "TeamName"]], on="TeamID")
+    top_seeds = seeds_yr.nsmallest(8, "seed_num")
+
+    if len(top_seeds) >= 2:
+        print(f"\nSample matchup predictions ({args.season}):")
+        ids = top_seeds["TeamID"].values
+        names = dict(zip(top_seeds["TeamID"], top_seeds["TeamName"]))
+        for i in range(len(ids)):
+            for j in range(i + 1, len(ids)):
+                pred = ext.matchup_predictions(
+                    np.array([ids[i]]), np.array([ids[j]]),
+                    np.array([args.season]),
+                )
+                a, b = names[ids[i]], names[ids[j]]
+                print(f"  {a:20s} vs {b:20s}: P({a} wins) = {pred[0]:.3f}")
+
+
+def _cmd_pnn_submit(args):
+    """Generate a Kaggle submission from the player NN alone (no AutoGluon)."""
+    from models.player_train import generate_pnn_submission
+
+    out_dir = tag_output_dir(args.tag)
+    output_path = out_dir / "submission.csv"
+    generate_pnn_submission(DATA_DIR, args.season, output_path, device=args.device)
+
+
+def _cmd_pnn_bracket(args):
+    """Run bracket simulation from player NN submission."""
+    import simulate
+
+    out_dir = tag_output_dir(args.tag)
+    submission = str(out_dir / "submission.csv")
+    output_path = out_dir / "bracket.csv"
+    simulate.run(submission, args.season, args.n_sims, output_path=str(output_path))
+
+
+# ── PBP Deep Model ────────────────────────────────────────────────────────────
+
+
+def cmd_pbp(args):
+    """Train, predict, or simulate with the PBP deep model."""
+    if args.pbp_cmd == "train":
+        from models.pbp_train import train_pbp_model
+        train_pbp_model(DATA_DIR, time_limit=args.time_limit, device=args.device,
+                        resume=args.resume, version=args.version,
+                        loss_fn=args.loss)
+    elif args.pbp_cmd == "submit":
+        from models.pbp_train import (
+            load_pbp_data, generate_predictions,
+            _load_checkpoint, N_PLAY_TYPES,
+        )
+        from models.pbp_model import PBPMatchupModel
+        import torch
+        import json as _json
+
+        from models.pbp_train import _ckpt_dir
+        ckpt = _ckpt_dir(DATA_DIR, getattr(args, "version", None))
+        with open(ckpt / "player_index.json") as f:
+            p2i = {int(k): v for k, v in _json.load(f).items()}
+        with open(ckpt / "config.json") as f:
+            cfg = _json.load(f)
+
+        model = PBPMatchupModel(
+            n_players=cfg["n_players"],
+            embed_dim=cfg.get("embed_dim", 64),
+            player_dim=cfg.get("player_dim", 32),
+            n_play_types=cfg.get("n_play_types", N_PLAY_TYPES),
+            ptype_dim=cfg.get("ptype_dim", 8),
+            n_heads=cfg.get("n_heads", 4),
+            n_season_layers=cfg.get("n_season_layers", 2),
+        )
+        device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+        _load_checkpoint(model, DATA_DIR, "best", device,
+                         version=getattr(args, "version", None))
+        model.to(device)
+
+        # Load data using checkpoint's player index for consistent embeddings
+        games, _p2i_new, ts_games, ptensors = load_pbp_data(DATA_DIR, seasons=[2024, 2025, 2026])
+
+        preds = generate_predictions(model, p2i, games, ts_games, ptensors,
+                                     DATA_DIR, device=device)
+        out_dir = tag_output_dir(args.tag)
+        out_path = out_dir / "submission.csv"
+        preds.to_csv(out_path, index=False)
+        print(f"  Saved {len(preds)} predictions to {out_path}")
+    elif args.pbp_cmd == "bracket":
+        import simulate
+        out_dir = tag_output_dir(args.tag)
+        submission = str(out_dir / "submission.csv")
+        output_path = out_dir / "bracket.csv"
+        simulate.run(submission, args.season, args.n_sims, output_path=str(output_path))
+    else:
+        print("Usage: python run.py pbp {train|submit|bracket}")
+
+
+# ── Composable PBP ───────────────────────────────────────────────────────────
+
+
+def cmd_cpbp(args):
+    """Composable PBP player-level model commands."""
+    if args.cpbp_cmd == "train":
+        from models.composable_pbp_train import train_composable_pbp
+        train_composable_pbp(
+            DATA_DIR, time_limit=args.time_limit,
+            device=args.device, version=args.version,
+        )
+    elif args.cpbp_cmd == "submit":
+        from models.composable_pbp_train import generate_cpbp_predictions
+        preds = generate_cpbp_predictions(
+            DATA_DIR, season=PREDICTION_SEASON,
+            device=args.device, version=args.version,
+        )
+        out_dir = Path("output") / args.tag
+        out_dir.mkdir(parents=True, exist_ok=True)
+        preds.to_csv(out_dir / "submission.csv", index=False)
+        print(f"  Saved to {out_dir / 'submission.csv'}")
+    elif args.cpbp_cmd == "bracket":
+        from simulate import run as sim_run
+        out_dir = Path("output") / args.tag
+        sim_run(
+            submission=str(out_dir / "submission.csv"),
+            season=PREDICTION_SEASON,
+            n_sims=args.n_sims,
+            output_path=str(out_dir / "bracket.csv"),
+        )
+    else:
+        print("Usage: python run.py cpbp {train|submit|bracket}")
 
 
 # ── Full ─────────────────────────────────────────────────────────────────────
@@ -526,6 +850,7 @@ def main():
     p.add_argument("--max-bet", type=float, default=0.05)
     p.add_argument("--n-sims", type=int, default=10000)
     p.add_argument("--total-cost", type=float, default=1.01, help="YES+NO total cost")
+    p.add_argument("--fee", type=float, default=0.02, help="Per-contract fee (default: 0.02)")
     p.add_argument("--from-csv", help="Load market data from CSV instead of API")
     p.set_defaults(func=cmd_futures)
 
@@ -559,6 +884,13 @@ def main():
     c.add_argument("--season1", type=int, default=2025)
     c.add_argument("--season2", type=int, default=PREDICTION_SEASON)
 
+    fi = analyze_sub.add_parser("importance", help="Feature importance (permutation)")
+    fi.add_argument("--tag", required=True)
+    fi.add_argument("--top-n", type=int, default=30, help="Number of top features to show")
+    fi.add_argument("--shuffles", type=int, default=5, help="Permutation shuffle sets")
+    fi.add_argument("--team", default=None, help="Show team's values for top features")
+    fi.add_argument("--season", type=int, default=PREDICTION_SEASON)
+
     p_analyze.set_defaults(func=cmd_analyze)
 
     # ── data ──
@@ -570,9 +902,95 @@ def main():
     f.add_argument("--api-key", help="Odds API key (for odds source)")
     f.add_argument("--resume", action="store_true")
 
+    pbp = data_sub.add_parser("fetch-pbp", help="Fetch play-by-play from CBBD API")
+    pbp.add_argument("--api-key", required=True, help="CBBD API key")
+    pbp.add_argument("--team", default=None, help="Single team (for testing)")
+    pbp.add_argument("--season", type=int, default=2026, help="Season (with --team)")
+    pbp.add_argument("--rate-limit", type=float, default=1.0,
+                     help="Seconds between API calls (default: 1.0)")
+
     data_sub.add_parser("status", help="Show data freshness")
 
     p_data.set_defaults(func=cmd_data)
+
+    # ── player-nn ──
+    p_pnn = subparsers.add_parser("player-nn", help="Player matchup neural net")
+    pnn_sub = p_pnn.add_subparsers(dest="pnn_cmd")
+
+    pnn_train = pnn_sub.add_parser("train", help="Train the player matchup model")
+    pnn_train.add_argument("--val-season", type=int, default=VALIDATION_SEASON,
+                           help="Validation season (trains on prior seasons)")
+    pnn_train.add_argument("--epochs", type=int, default=500)
+    pnn_train.add_argument("--batch-size", type=int, default=512)
+    pnn_train.add_argument("--device", default=None, help="cuda or cpu (auto-detected)")
+    pnn_train.add_argument("--time-limit", type=int, default=None,
+                           help="Max training time in seconds (e.g. 7200 for 2h)")
+
+    pnn_test = pnn_sub.add_parser("test", help="Test trained model: embeddings & predictions")
+    pnn_test.add_argument("--season", type=int, default=PREDICTION_SEASON)
+    pnn_test.add_argument("--device", default=None)
+
+    pnn_submit = pnn_sub.add_parser("submit", help="Generate submission from player NN only")
+    pnn_submit.add_argument("--tag", required=True, help="Output tag (e.g. pnn_v1)")
+    pnn_submit.add_argument("--season", type=int, default=PREDICTION_SEASON)
+    pnn_submit.add_argument("--device", default=None)
+
+    pnn_bracket = pnn_sub.add_parser("bracket", help="Bracket sim from player NN submission")
+    pnn_bracket.add_argument("--tag", required=True, help="Output tag (must have submission)")
+    pnn_bracket.add_argument("--season", type=int, default=PREDICTION_SEASON)
+    pnn_bracket.add_argument("--n-sims", type=int, default=10000)
+
+    p_pnn.set_defaults(func=cmd_player_nn)
+
+    # ── pbp ──
+    p_pbp = subparsers.add_parser("pbp", help="PBP deep matchup model")
+    pbp_sub = p_pbp.add_subparsers(dest="pbp_cmd")
+
+    pbp_tr = pbp_sub.add_parser("train", help="Train the PBP deep model")
+    pbp_tr.add_argument("--time-limit", type=int, default=7200,
+                        help="Max training time in seconds (default: 7200)")
+    pbp_tr.add_argument("--device", default=None, help="cuda or cpu")
+    pbp_tr.add_argument("--resume", action="store_true",
+                        help="Resume from latest checkpoint")
+    pbp_tr.add_argument("--version", default=None,
+                        help="Model version tag (e.g. v4_brier). Saves to versioned dir.")
+    pbp_tr.add_argument("--loss", default="brier", choices=["brier", "bce"],
+                        help="Loss function: brier (MSE on probs) or bce (default: brier)")
+
+    pbp_sub_cmd = pbp_sub.add_parser("submit", help="Generate submission from PBP model")
+    pbp_sub_cmd.add_argument("--tag", required=True, help="Output tag")
+    pbp_sub_cmd.add_argument("--version", default=None,
+                             help="Model version to load (default: unversioned)")
+    pbp_sub_cmd.add_argument("--device", default=None)
+
+    pbp_bracket = pbp_sub.add_parser("bracket", help="Bracket from PBP submission")
+    pbp_bracket.add_argument("--tag", required=True)
+    pbp_bracket.add_argument("--season", type=int, default=PREDICTION_SEASON)
+    pbp_bracket.add_argument("--n-sims", type=int, default=10000)
+
+    p_pbp.set_defaults(func=cmd_pbp)
+
+    # ── cpbp (composable PBP) ──
+    p_cpbp = subparsers.add_parser("cpbp", help="Composable PBP player-level model")
+    cpbp_sub = p_cpbp.add_subparsers(dest="cpbp_cmd")
+
+    cpbp_tr = cpbp_sub.add_parser("train", help="Train the composable PBP model")
+    cpbp_tr.add_argument("--time-limit", type=int, default=14400,
+                         help="Max training time in seconds (default: 14400)")
+    cpbp_tr.add_argument("--device", default=None, help="cuda or cpu")
+    cpbp_tr.add_argument("--version", default=None,
+                         help="Model version tag")
+
+    cpbp_sub_cmd = cpbp_sub.add_parser("submit", help="Generate submission")
+    cpbp_sub_cmd.add_argument("--tag", required=True, help="Output tag")
+    cpbp_sub_cmd.add_argument("--device", default=None)
+    cpbp_sub_cmd.add_argument("--version", default=None)
+
+    cpbp_br = cpbp_sub.add_parser("bracket", help="Simulate bracket")
+    cpbp_br.add_argument("--tag", required=True, help="Output tag")
+    cpbp_br.add_argument("--n-sims", type=int, default=10000)
+
+    p_cpbp.set_defaults(func=cmd_cpbp)
 
     # ── full ──
     p = subparsers.add_parser("full", help="Train -> predict -> bracket (one shot)")

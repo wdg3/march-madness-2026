@@ -1,0 +1,52 @@
+# v6: Player-level neural net with cross-attention matchup modeling.
+# Key changes from v5:
+#   - Added player_impact: 17 team-level features from BartTorvik player-level data
+#   - Added player_nn: attention-based model that encodes individual players,
+#     learns within-team chemistry (self-attention) and cross-team matchup
+#     dynamics (cross-attention). Feeds team embeddings (16-dim) and matchup
+#     prediction back into the tabular ensemble.
+
+features:
+  - massey
+  - conference
+  - regular_season
+  - tourney_history
+  - rank_disagree
+  - seed_rank_delta
+  - close_games
+  - scoring_variance
+  - momentum
+  - tempo
+  - coach
+  - conf_tourney
+  - location
+  - travel
+  - rs_trajectory
+  - massey_trajectory
+  - kenpom
+  - ap_poll
+  - public_picks
+  - roster
+  - player_impact
+  - player_nn
+  - vegas
+
+training:
+  presets: best_quality
+  time_limit: 14400
+  num_bag_folds: 5
+  num_stack_levels: 1
+  train_seasons_start: 2010
+  validation_season: 2025
+  eval_metric: log_loss
+  use_seed_prior: true
+  include_regular_season: true
+  include_conf_tournament: true
+  time_decay_half_life: 5.0
+  game_weights:
+    tournament: 1.0
+    conf_tournament: 0.5
+    regular_season: 0.15
+
+prediction:
+  season: 2026

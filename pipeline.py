@@ -1,9 +1,12 @@
 from pathlib import Path
 import hashlib
+import numpy as np
 import pandas as pd
 from features import REGISTRY
 from features.base import ExternalFeatureSource
 from features.travel import ensure_geocoded, add_travel_to_matchups, add_travel_to_predictions
+from features.player_nn import add_player_nn_to_matchups
+from features.pbp_nn import add_pbp_to_matchups
 
 CACHE_DIR = Path(".cache")
 
@@ -83,38 +86,42 @@ def build_team_features(data_dir: Path, enabled: list[str], force_fetch: bool = 
 
 
 def build_matchups(team_features: pd.DataFrame, games: pd.DataFrame,
-                   data_dir: Path = None, travel: bool = False) -> pd.DataFrame:
-    """Build pairwise matchup training data from historical tournament games.
+                   data_dir: Path = None, travel: bool = False,
+                   player_nn: bool = False, pbp_nn: bool = False) -> pd.DataFrame:
+    """Build pairwise matchup rows from game results.
 
     For each game, creates two rows:
-      [TeamA_features | TeamB_features, Label=1]  (A is winner)
-      [TeamB_features | TeamA_features, Label=0]  (A is loser)
-    """
-    print("Building matchup training data...")
+      [TeamA_features | TeamB_features | delta_features | Label=1]  (A is winner)
+      [TeamA_features | TeamB_features | delta_features | Label=0]  (A is loser)
 
-    # Only keep seasons present in team features
+    Uses dict-based feature lookup for O(1) per-game instead of DataFrame filtering,
+    which matters when processing ~80K+ regular season games.
+    """
+    print(f"  Building matchups from {len(games)} games...")
+
     available_seasons = set(team_features["Season"].unique())
     games = games[games["Season"].isin(available_seasons)]
 
-    # Prepare feature columns (everything except Season and TeamID)
     feat_cols = [c for c in team_features.columns if c not in ("Season", "TeamID")]
+
+    # Dict lookup: (season, team_id) -> feature array — O(1) per game
+    feat_lookup = {}
+    for _, row in team_features.iterrows():
+        feat_lookup[(row["Season"], row["TeamID"])] = row[feat_cols].values
 
     rows = []
     for _, game in games.iterrows():
         s = game["Season"]
-        sf = team_features[team_features["Season"] == s]
+        w_key = (s, game["WTeamID"])
+        l_key = (s, game["LTeamID"])
 
-        w = sf[sf["TeamID"] == game["WTeamID"]]
-        l = sf[sf["TeamID"] == game["LTeamID"]]
-
-        if len(w) == 0 or len(l) == 0:
+        if w_key not in feat_lookup or l_key not in feat_lookup:
             continue
 
-        w_feats = w[feat_cols].values[0]
-        l_feats = l[feat_cols].values[0]
+        w_feats = feat_lookup[w_key]
+        l_feats = feat_lookup[l_key]
         delta = w_feats - l_feats
 
-        # Winner as A (label=1), Loser as A (label=0)
         row1 = [s, game["WTeamID"], game["LTeamID"]] + list(w_feats) + list(l_feats) + list(delta) + [1]
         row0 = [s, game["LTeamID"], game["WTeamID"]] + list(l_feats) + list(w_feats) + list(-delta) + [0]
         rows.append(row1)
@@ -129,31 +136,123 @@ def build_matchups(team_features: pd.DataFrame, games: pd.DataFrame,
     )
     result = pd.DataFrame(rows, columns=col_names)
 
-    # Add matchup-level travel features
     if travel and data_dir is not None:
         result = add_travel_to_matchups(result, games, data_dir)
 
-    print(f"  Matchup data shape: {result.shape}")
+    if player_nn and data_dir is not None:
+        result = add_player_nn_to_matchups(result, data_dir)
+
+    if pbp_nn and data_dir is not None:
+        result = add_pbp_to_matchups(result, data_dir)
+
+    print(f"    {len(result)} matchup rows")
     return result
 
 
+def build_training_data(
+    team_features: pd.DataFrame,
+    data_dir: Path,
+    travel: bool = False,
+    player_nn: bool = False,
+    pbp_nn: bool = False,
+    include_regular_season: bool = True,
+    include_conf_tournament: bool = True,
+    time_decay_half_life: float = 5.0,
+    game_weights: dict = None,
+) -> pd.DataFrame:
+    """Build training data from multiple game sources with sample weights.
+
+    Combines NCAA tournament, conference tournament, and regular season games.
+    Adds game-type features (is_ncaa_tournament, is_conf_tournament) and computes
+    sample_weight = time_decay * game_type_weight for AutoGluon sample weighting.
+
+    Args:
+        team_features: Per-team-per-season feature matrix.
+        data_dir: Path to data directory.
+        travel: Whether to add travel features (only for tournament games).
+        include_regular_season: Include regular season games in training.
+        include_conf_tournament: Include conference tournament games in training.
+        time_decay_half_life: Half-life in years for exponential decay.
+            A season this many years old gets half the weight of the most recent.
+            Set to 0 to disable time decay (all seasons weighted equally).
+        game_weights: Per-source importance weights.
+            Defaults: tournament=1.0, conf_tournament=0.5, regular_season=0.15.
+    """
+    if game_weights is None:
+        game_weights = {"tournament": 1.0, "conf_tournament": 0.5, "regular_season": 0.15}
+
+    print("Building training data...")
+    sources = []
+
+    # NCAA tournament games (always included)
+    tourney = pd.read_csv(data_dir / "MNCAATourneyCompactResults.csv")
+    t_matchups = build_matchups(team_features, tourney, data_dir=data_dir, travel=travel, player_nn=player_nn, pbp_nn=pbp_nn)
+    t_matchups["is_ncaa_tournament"] = 1
+    t_matchups["is_conf_tournament"] = 0
+    t_matchups["_game_weight"] = game_weights.get("tournament", 1.0)
+    sources.append(t_matchups)
+
+    # Conference tournament games
+    if include_conf_tournament:
+        conf_path = data_dir / "MConferenceTourneyGames.csv"
+        if conf_path.exists():
+            conf = pd.read_csv(conf_path)
+            c_matchups = build_matchups(team_features, conf, data_dir=data_dir, travel=False, player_nn=player_nn, pbp_nn=pbp_nn)
+            c_matchups["is_ncaa_tournament"] = 0
+            c_matchups["is_conf_tournament"] = 1
+            c_matchups["_game_weight"] = game_weights.get("conf_tournament", 0.5)
+            sources.append(c_matchups)
+
+    # Regular season games
+    if include_regular_season:
+        rs = pd.read_csv(data_dir / "MRegularSeasonCompactResults.csv")
+        rs_matchups = build_matchups(team_features, rs, data_dir=data_dir, travel=False, player_nn=player_nn, pbp_nn=pbp_nn)
+        rs_matchups["is_ncaa_tournament"] = 0
+        rs_matchups["is_conf_tournament"] = 0
+        rs_matchups["_game_weight"] = game_weights.get("regular_season", 0.15)
+        sources.append(rs_matchups)
+
+    combined = pd.concat(sources, ignore_index=True)
+
+    # Sample weight = time_decay * game_type_weight
+    max_season = combined["Season"].max()
+    if time_decay_half_life and time_decay_half_life > 0:
+        time_decay = np.float_power(0.5, (max_season - combined["Season"]) / time_decay_half_life)
+        combined["sample_weight"] = combined["_game_weight"] * time_decay
+    else:
+        combined["sample_weight"] = combined["_game_weight"]
+
+    combined = combined.drop(columns=["_game_weight"])
+
+    print(f"  Total training data: {len(combined)} rows")
+    print(f"  Sample weight range: [{combined['sample_weight'].min():.4f}, {combined['sample_weight'].max():.4f}]")
+    return combined
+
+
 def build_prediction_pairs(team_features: pd.DataFrame, season: int,
-                           data_dir: Path = None, travel: bool = False) -> pd.DataFrame:
+                           data_dir: Path = None, travel: bool = False,
+                           player_nn: bool = False, pbp_nn: bool = False) -> pd.DataFrame:
     """Build all pairwise matchups for prediction in a given season.
 
-    Only includes teams that have a seed (tournament teams).
+    Adds game-type features (is_ncaa_tournament=1, is_conf_tournament=0) for
+    consistency with training data — predictions are for tournament games.
     """
     print(f"Building prediction pairs for {season}...")
     current = team_features[team_features["Season"] == season]
     feat_cols = [c for c in team_features.columns if c not in ("Season", "TeamID")]
     teams = current["TeamID"].unique()
 
+    # Dict lookup for O(1) per pair
+    feat_lookup = {}
+    for _, row in current.iterrows():
+        feat_lookup[row["TeamID"]] = row[feat_cols].values
+
     rows = []
-    for i, a in enumerate(teams):
+    for a in teams:
+        a_feats = feat_lookup[a]
         for b in teams:
             if a != b:
-                a_feats = current[current["TeamID"] == a][feat_cols].values[0]
-                b_feats = current[current["TeamID"] == b][feat_cols].values[0]
+                b_feats = feat_lookup[b]
                 delta = a_feats - b_feats
                 rows.append([season, a, b] + list(a_feats) + list(b_feats) + list(delta))
 
@@ -165,9 +264,18 @@ def build_prediction_pairs(team_features: pd.DataFrame, season: int,
     )
     result = pd.DataFrame(rows, columns=col_names)
 
-    # Add matchup-level travel features
+    # Game-type features: predictions are for tournament games
+    result["is_ncaa_tournament"] = 1
+    result["is_conf_tournament"] = 0
+
     if travel and data_dir is not None:
         result = add_travel_to_predictions(result, data_dir, season)
+
+    if player_nn and data_dir is not None:
+        result = add_player_nn_to_matchups(result, data_dir)
+
+    if pbp_nn and data_dir is not None:
+        result = add_pbp_to_matchups(result, data_dir)
 
     print(f"  Prediction pairs shape: {result.shape}")
     return result

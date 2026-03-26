@@ -200,5 +200,154 @@ def cmd_confidence(args):
               f">90%={np.mean(fav > 0.9)*100:.1f}%")
 
 
+def cmd_importance(args):
+    """Show feature importance for a trained model.
+
+    Uses permutation importance on validation data (2025 tournament)
+    to measure how much each feature contributes to prediction quality.
+    Optionally show a specific team's values for the top features.
+    """
+    import json as _json
+    from autogluon.tabular import TabularPredictor
+    from pipeline import build_team_features as _btf, build_training_data
+    from config import load_config, VALIDATION_SEASON
+
+    tag = args.tag
+    predictor = TabularPredictor.load(f"AutogluonModels/{tag}")
+
+    top_n = args.top_n
+
+    # Extract feature importance from L1 tree-based models (fast, no data needed).
+    # L1 models use the original features; L2+ use stacked predictions.
+    print(f"\n=== Feature Importance ({tag}) ===")
+    print(f"  Extracting from L1 tree-based model splits...\n")
+
+    l1_tree_models = [m for m in predictor.model_names()
+                      if "_BAG_L1" in m and not m.startswith(("NeuralNet", "Weighted"))]
+
+    importance_totals = {}
+    model_count = 0
+    for model_name in l1_tree_models:
+        try:
+            bag_model = predictor._trainer.load_model(model_name)
+            child_imps = []
+            for child_key in bag_model.models:
+                child = bag_model.load_child(child_key)
+                inner = child.model
+                if hasattr(inner, "feature_importance"):
+                    fi = inner.feature_importance()
+                    names = inner.feature_name()
+                    child_imps.append(dict(zip(names, fi)))
+                elif hasattr(inner, "feature_importances_"):
+                    names = list(child._features) if hasattr(child, "_features") else [f"f{i}" for i in range(len(inner.feature_importances_))]
+                    child_imps.append(dict(zip(names, inner.feature_importances_)))
+                elif hasattr(inner, "get_feature_importance"):
+                    names = list(child._features) if hasattr(child, "_features") else [f"f{i}" for i in range(len(inner.get_feature_importance()))]
+                    child_imps.append(dict(zip(names, inner.get_feature_importance())))
+            if child_imps:
+                avg_imp = {}
+                for d in child_imps:
+                    for k, v in d.items():
+                        avg_imp[k] = avg_imp.get(k, 0) + v / len(child_imps)
+                for k, v in avg_imp.items():
+                    importance_totals[k] = importance_totals.get(k, 0) + v
+                model_count += 1
+                print(f"  {model_name}: {len(child_imps)} folds")
+        except Exception as e:
+            print(f"  {model_name}: skipped ({e})")
+            continue
+
+    if model_count == 0:
+        print("No tree-based models found with feature importance.")
+        return
+
+    # Average across models and sort
+    importance = pd.Series({k: v / model_count for k, v in importance_totals.items()})
+    importance = importance.sort_values(ascending=False)
+
+    print(f"\n  Averaged across {model_count} L1 tree models\n")
+    print(f"{'Rank':>4s}  {'Feature':45s}  {'Importance':>10s}")
+    print("-" * 65)
+    for rank, (feat, imp) in enumerate(importance.head(top_n).items(), 1):
+        print(f"{rank:4d}  {feat:45s}  {imp:10.1f}")
+
+    # Group by feature source
+    source_imp = {}
+    for feat, imp_val in importance.items():
+        for prefix in ["massey_", "rs_", "kp_", "seed_", "conf_", "th_", "rd_",
+                       "sr_", "srd_", "cg_", "sv_", "mom_", "tempo_", "coach_",
+                       "ct_", "loc_", "travel_", "traj_", "mt_", "ap_", "pp_",
+                       "roster_", "vg_"]:
+            if feat.startswith(prefix):
+                source = prefix.rstrip("_")
+                break
+        else:
+            source = feat.split("_")[0]
+        source_imp.setdefault(source, 0.0)
+        source_imp[source] += max(imp_val, 0)
+
+    print(f"\n{'Source':15s}  {'Total Importance':>16s}")
+    print("-" * 35)
+    for source, imp_val in sorted(source_imp.items(), key=lambda x: -x[1]):
+        if imp_val > 0:
+            print(f"  {source:13s}  {imp_val:16.1f}")
+
+    # If --team specified, show that team's values for top features
+    if args.team:
+        tf = build_team_features(DATA_DIR, ENABLED_FEATURES, gender="M")
+        name_map = _load_names()
+        matches = {tid: name for tid, name in name_map.items()
+                   if args.team.lower() in name.lower()}
+        if len(matches) == 0:
+            print(f"\nNo team matching '{args.team}'")
+            return
+        exact = {tid: n for tid, n in matches.items() if n.lower() == args.team.lower()}
+        if exact:
+            matches = exact
+        if len(matches) > 1:
+            print(f"\nMultiple matches: {matches}")
+            return
+
+        team_id = list(matches.keys())[0]
+        team_name = matches[team_id]
+        season = args.season
+
+        tf_season = tf[tf["Season"] == season]
+        team_row = tf_season[tf_season["TeamID"] == team_id]
+        if len(team_row) == 0:
+            print(f"\n{team_name} not found in {season}")
+            return
+
+        # Map _A/_B/_delta features back to team-level features
+        team_feat_cols = [c for c in tf.columns if c not in ("Season", "TeamID")]
+        team_vals = team_row[team_feat_cols].iloc[0]
+
+        print(f"\n=== {team_name} — Top Feature Values ({season}) ===\n")
+        print(f"{'Feature':45s}  {'Value':>8s}  {'Pctl':>5s}  {'Importance':>10s}")
+        print("-" * 75)
+
+        shown = set()
+        for feat, imp_val in importance.head(top_n * 3).items():
+            # Strip _A/_B/_delta suffix to get team-level feature
+            for suffix in ("_delta", "_A", "_B"):
+                if feat.endswith(suffix):
+                    base = feat[: -len(suffix)]
+                    break
+            else:
+                base = feat
+            if base in shown or base not in team_feat_cols:
+                continue
+            shown.add(base)
+            val = team_vals[base]
+            if pd.isna(val):
+                continue
+            # Percentile
+            col_vals = tf_season[base].dropna()
+            pctl = (col_vals < val).sum() / len(col_vals) * 100 if len(col_vals) > 0 else 0
+            print(f"  {base:43s}  {val:8.2f}  {pctl:4.0f}%  {imp_val:10.1f}")
+            if len(shown) >= top_n:
+                break
+
+
 if __name__ == "__main__":
     print("Use 'python run.py analyze ...' instead. Run 'python run.py --help' for details.")

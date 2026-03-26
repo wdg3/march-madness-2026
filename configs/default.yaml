@@ -3,7 +3,7 @@
 
 features:
   - massey
-  - seeds
+  # seeds removed — used as a prior instead of a model feature (see seed_prior.py)
   - conference
   - regular_season
   - tourney_history
@@ -32,6 +32,31 @@ training:
   num_stack_levels: 2
   train_seasons_start: 2010
   validation_season: 2025
+
+  # Eval metric: "brier_score" (matches Kaggle grading) or "log_loss" (sharper gradients)
+  eval_metric: log_loss
+
+  # Seed prior blending: anchors predictions in historical seed-matchup win rates.
+  # Alpha tuned on validation tournament to minimize Brier score.
+  # Replaces isotonic calibration with a more principled mechanism.
+  use_seed_prior: true
+
+  # Training data sources beyond NCAA tournament games.
+  # Regular season and conference tournament games expand the dataset from ~1,900 rows
+  # to ~170K+ rows, with game_weights controlling their relative importance.
+  include_regular_season: true
+  include_conf_tournament: true
+
+  # Exponential time decay: weight = 0.5^((max_season - season) / half_life).
+  # A game from 5 years ago gets half the weight of the most recent season.
+  # Set to 0 to disable (all seasons weighted equally).
+  time_decay_half_life: 5.0
+
+  # Per-source importance weights, combined with time decay for final sample_weight.
+  game_weights:
+    tournament: 1.0
+    conf_tournament: 0.5
+    regular_season: 0.15
 
 prediction:
   season: 2026

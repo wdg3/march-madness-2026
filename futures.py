@@ -171,6 +171,9 @@ def compute_advancement_probs(submission_path, season, data_dir, n_sims=10000, s
     probs = load_probabilities(submission_path, season)
     seed_to_team, slots, team_names = build_bracket(season, data_dir)
 
+    # Actual tournament participants (teams with seeds)
+    tourney_teams = set(seed_to_team.values())
+
     rng = np.random.default_rng(seed)
     advancement = defaultdict(lambda: defaultdict(int))
 
@@ -188,7 +191,7 @@ def compute_advancement_probs(submission_path, season, data_dir, n_sims=10000, s
         for rnd, count in rounds.items():
             adv_probs[(team, rnd)] = count / n_sims
 
-    return adv_probs, team_names
+    return adv_probs, team_names, tourney_teams
 
 
 def generate_futures_bets(
@@ -201,8 +204,17 @@ def generate_futures_bets(
     min_edge=0.02,
     max_bet_pct=0.05,
     bankroll=1000.0,
+    fee=0.0,
+    tourney_teams=None,
 ):
-    """Generate bet sheet with both YES and NO positions."""
+    """Generate bet sheet with both YES and NO positions.
+
+    Args:
+        fee: Per-contract fee (e.g. 0.02 for Kalshi/Coinbase 2¢ fee).
+            Applied to both buy cost and winning settlement payout.
+        tourney_teams: Set of TeamIDs in the tournament. If provided,
+            only these teams appear on the bet sheet.
+    """
     id_to_name = {v: k for k, v in name_to_id.items()}
     # Also add team_names from bracket
     for tid, tname in team_names.items():
@@ -221,19 +233,27 @@ def generate_futures_bets(
         if tid is None:
             continue
 
+        # Skip teams not in the tournament bracket
+        if tourney_teams and tid not in tourney_teams:
+            continue
+
         model_prob = adv_probs.get((tid, rnd), 0.0)
         team_name = id_to_name.get(tid, kalshi_name)
+        no_prob = 1.0 - model_prob
 
         # YES side: buy at market_ask, win $1 if team advances
         yes_cost = market_ask
-        yes_edge = model_prob / yes_cost - 1 if yes_cost > 0 else -1
-        yes_kf = kelly_fraction(model_prob, yes_cost) * kelly_frac
+        yes_eff_cost = yes_cost + fee
+        yes_eff_payout = 1.0 - fee
+        yes_edge = (model_prob * yes_eff_payout) / yes_eff_cost - 1 if yes_eff_cost > 0 else -1
+        yes_kf = kelly_fraction(model_prob, yes_cost, fee=fee) * kelly_frac
 
         # NO side: buy at (total_cost - market_ask), win $1 if team doesn't advance
         no_cost = total_cost - market_ask
-        no_prob = 1.0 - model_prob
-        no_edge = no_prob / no_cost - 1 if no_cost > 0 else -1
-        no_kf = kelly_fraction(no_prob, no_cost) * kelly_frac
+        no_eff_cost = no_cost + fee
+        no_eff_payout = 1.0 - fee
+        no_edge = (no_prob * no_eff_payout) / no_eff_cost - 1 if no_eff_cost > 0 else -1
+        no_kf = kelly_fraction(no_prob, no_cost, fee=fee) * kelly_frac
 
         for side, edge, kf, prob, cost in [
             ("YES", yes_edge, yes_kf, model_prob, yes_cost),
@@ -242,15 +262,17 @@ def generate_futures_bets(
             if edge < min_edge:
                 continue
 
+            eff_cost = cost + fee
+            eff_payout = 1.0 - fee
             bet_pct = min(kf, max_bet_pct)
             wager = round(bankroll * bet_pct, 2)
             if wager < 1:
                 continue
-            contracts = int(wager / cost) if cost > 0 else 0
+            contracts = int(wager / eff_cost) if eff_cost > 0 else 0
             if contracts < 1:
                 continue
-            actual_wager = round(contracts * cost, 2)
-            profit = round(contracts * (1.0 - cost), 2)
+            actual_wager = round(contracts * eff_cost, 2)
+            profit = round(contracts * (eff_payout - eff_cost), 2)
             ev = round(actual_wager * edge, 2)
 
             bets.append({

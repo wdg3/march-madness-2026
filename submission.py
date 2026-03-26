@@ -9,8 +9,14 @@ def generate_submission(
     prediction_pairs: pd.DataFrame,
     sample_submission: pd.DataFrame,
     output_path: Path,
+    seed_prior=None,
 ) -> None:
-    """Generate Kaggle-format submission with symmetry enforcement."""
+    """Generate Kaggle-format submission with optional seed prior blending and symmetry enforcement.
+
+    Args:
+        seed_prior: Optional SeedPrior instance. If provided, blends model predictions
+            with historical seed-matchup win rates via log-odds weighting.
+    """
     print("Generating predictions...")
 
     # Columns to drop before prediction (identifiers)
@@ -18,9 +24,28 @@ def generate_submission(
     X = prediction_pairs.drop(columns=id_cols)
 
     proba = predictor.predict_proba(X)
-    # Get probability of class 1 (TeamA wins)
+    model_proba = proba[1].values
+
+    # Blend with seed prior if available
+    if seed_prior is not None:
+        seasons = prediction_pairs["Season"].values
+        teams_a = prediction_pairs["TeamID_A"].values
+        teams_b = prediction_pairs["TeamID_B"].values
+
+        seed_a = np.array([
+            seed_prior.get_seeds(int(s), int(a), int(b))[0] or 8
+            for s, a, b in zip(seasons, teams_a, teams_b)
+        ])
+        seed_b = np.array([
+            seed_prior.get_seeds(int(s), int(a), int(b))[1] or 8
+            for s, a, b in zip(seasons, teams_a, teams_b)
+        ])
+
+        model_proba = seed_prior.blend(model_proba, seed_a, seed_b)
+        print(f"  Blended with seed prior (α={seed_prior.alpha:.2f})")
+
     prediction_pairs = prediction_pairs.copy()
-    prediction_pairs["Pred"] = proba[1].values
+    prediction_pairs["Pred"] = model_proba
 
     # Symmetry enforcement: average forward and backward predictions
     print("Enforcing symmetry...")

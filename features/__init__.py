@@ -18,6 +18,9 @@ from features.trajectory import RegularSeasonTrajectoryFeatures
 from features.massey_trajectory import MasseyTrajectoryFeatures
 from features.vegas import VegasOddsFeatures
 from features.roster import RosterContinuityFeatures
+from features.player_impact import PlayerImpactFeatures
+from features.player_nn import PlayerNNTeamFeatures
+from features.pbp_nn import PBPTeamFeatures
 from features.kenpom import KenPomFeatures, APPollFeatures, PublicPicksFeatures
 
 REGISTRY = {
@@ -41,6 +44,13 @@ REGISTRY = {
     # External sources (not enabled by default — require data fetching)
     "vegas": VegasOddsFeatures,
     "roster": RosterContinuityFeatures,
+    "player_impact": PlayerImpactFeatures,
+    # "player_nn" is both team-level (embeddings) and matchup-level (predictions)
+    # Matchup predictions handled in pipeline.py like travel
+    "player_nn": PlayerNNTeamFeatures,
+    # "pbp_nn" — PBP deep model season embeddings + matchup predictions
+    # Matchup predictions handled in pipeline.py like travel/player_nn
+    "pbp_nn": PBPTeamFeatures,
     "kenpom": KenPomFeatures,
     "ap_poll": APPollFeatures,
     "public_picks": PublicPicksFeatures,
