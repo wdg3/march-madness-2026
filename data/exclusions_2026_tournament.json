@@ -1,0 +1,23 @@
+{
+  "description": "Pre-tournament player exclusions for 2026 NCAA tournament. Players ruled OUT or highly likely to miss games at start of tournament (March 17, 2026).",
+  "sources": [
+    "NBC Sports: March Madness injuries to know",
+    "CBS Sports: Tracking key injuries in the NCAA Tournament",
+    "Yahoo Sports: March Madness key injuries to know",
+    "RotoWire: March Madness 2026 Injuries"
+  ],
+  "exclusions": [
+    {"team": "Alabama", "player": "Aden Holloway", "status": "out", "reason": "suspended (felony arrest)"},
+    {"team": "BYU", "player": "Richie Saunders", "status": "out", "reason": "torn ACL (season-ending)"},
+    {"team": "Clemson", "player": "Carter Welling", "status": "out", "reason": "torn ACL (season-ending)"},
+    {"team": "Duke", "player": "Caleb Foster", "status": "out", "reason": "foot fracture (March 7)"},
+    {"team": "Duke", "player": "Patrick Ngongba II", "status": "out", "reason": "foot injury (missed ACC tournament)"},
+    {"team": "Gonzaga", "player": "Braden Huff", "status": "out", "reason": "knee injury (missed 15 games)"},
+    {"team": "Louisville", "player": "Mikel Brown Jr.", "status": "out", "reason": "back injury (out first weekend)"},
+    {"team": "Michigan", "player": "L.J. Cason", "status": "out", "reason": "torn ACL (season-ending, Feb 27)"},
+    {"team": "North Carolina", "player": "Caleb Wilson", "status": "out", "reason": "thumb fracture (season-ending surgery)"},
+    {"team": "Ohio State", "player": "Taison Chatman", "status": "questionable", "reason": "groin"},
+    {"team": "Texas Tech", "player": "JT Toppin", "status": "out", "reason": "torn ACL (season-ending)"},
+    {"team": "Villanova", "player": "Matt Hodge", "status": "out", "reason": "torn ACL (season-ending)"}
+  ]
+}

@@ -739,6 +739,7 @@ def cmd_cpbp(args):
         preds = generate_cpbp_predictions(
             DATA_DIR, season=PREDICTION_SEASON,
             device=args.device, version=args.version,
+            exclusion_file=getattr(args, "exclusions", None),
         )
         out_dir = Path("output") / args.tag
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -985,6 +986,8 @@ def main():
     cpbp_sub_cmd.add_argument("--tag", required=True, help="Output tag")
     cpbp_sub_cmd.add_argument("--device", default=None)
     cpbp_sub_cmd.add_argument("--version", default=None)
+    cpbp_sub_cmd.add_argument("--exclusions", default=None,
+                              help="JSON file with player exclusions")
 
     cpbp_br = cpbp_sub.add_parser("bracket", help="Simulate bracket")
     cpbp_br.add_argument("--tag", required=True, help="Output tag")

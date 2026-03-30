@@ -607,8 +607,14 @@ def generate_cpbp_predictions(
     season: int = 2026,
     device: str | None = None,
     version: str | None = None,
+    exclusion_file: str | None = None,
 ):
-    """Generate pairwise win probabilities using the composable PBP model."""
+    """Generate pairwise win probabilities using the composable PBP model.
+
+    Args:
+        exclusion_file: Path to JSON file with player exclusions.
+            Format: {"exclusions": [{"team": "Duke", "player": "Caleb Foster", ...}]}
+    """
     import pandas as pd
     from models.pbp_train import _build_team_name_map
 
@@ -655,13 +661,42 @@ def generate_cpbp_predictions(
     for key, gids in player_games.items():
         _pgi[key] = {g: i for i, g in enumerate(gids)}
 
-    # For predictions, use ALL plays up to end of season (no causal boundary)
-    # Build team → full season player embeddings
+    # Load exclusions if provided
+    excluded_pids: dict[str, set[int]] = {}  # team_name -> set of excluded player indices
+    if exclusion_file:
+        # Build CBBD player name -> pid mapping from raw PBP files
+        pid_to_name = {}
+        pbp_dir = data_dir / "external" / "pbp"
+        for fpath in sorted(pbp_dir.glob(f"plays_{season}_*.json")):
+            with open(fpath) as f:
+                plays_raw = json.load(f)
+            for p in plays_raw:
+                for pl in p.get("onFloor") or []:
+                    if pl["id"] in p2i:
+                        pid_to_name[p2i[pl["id"]]] = (pl["name"], pl["team"])
+
+        with open(exclusion_file) as f:
+            excl_data = json.load(f)
+
+        n_excluded = 0
+        for e in excl_data.get("exclusions", []):
+            if e.get("status") not in ("out", "suspended"):
+                continue
+            for pid, (name, pteam) in pid_to_name.items():
+                if (e["player"].lower() in name.lower() or name.lower() in e["player"].lower()):
+                    if (e["team"].lower() in pteam.lower() or pteam.lower() in e["team"].lower()):
+                        excluded_pids.setdefault(pteam, set()).add(pid)
+                        n_excluded += 1
+                        print(f"    Excluding {name} ({pteam}) - {e['reason']}")
+        print(f"  {n_excluded} players excluded")
+
+    # Build team → full season player embeddings (with exclusions applied)
     def get_team_players(team, season):
-        """Get full-season play embeddings for each player on a team."""
+        """Get full-season play embeddings for each available player."""
+        excluded = excluded_pids.get(team, set())
         players = []
         for (pid, t, s) in pse:
-            if t == team and s == season:
+            if t == team and s == season and pid not in excluded:
                 players.append(pse[(pid, t, s)])
         return players
 
