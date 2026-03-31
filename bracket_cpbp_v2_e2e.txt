@@ -1,0 +1,44 @@
+
+2026 NCAA TOURNAMENT — Composable PBP v2 E2E (with exclusions)
+==============================================================
+
+         WEST (W)                                                                                EAST (X)
+
+Duke 98%                                                                                                                             98% Florida
+                  Duke 96%                                                                                         95% Florida
+Ohio St 96%                                                                                                                          69% Clemson
+                                    Duke 92%                                                     92% Florida
+St John's 93%                                                                                                                     94% McNeese St
+                  Michigan St 94%                                                                                 91% Illinois
+Kansas 97%                                                                                                                          97% Nebraska
+                                                      Duke 52%                 86% Florida
+Michigan St 98%                                                                                                                     98% Illinois
+                  Connecticut 93%                                                                                  96% Houston
+Louisville 98%                                                                                                                95% North Carolina
+                                    Michigan St 89%                                              93% Houston
+UCLA 58%                                                                                                                        88% St Mary's CA
+                  Kansas 66%                                                                                    83% McNeese St
+Connecticut 97%                                                                                                                      98% Houston
+
+
+                                                      Florida 69%  >>>  Florida 49%  <<<  64% Michigan
+
+         SOUTH (Y)                                                                              MIDWEST (Z)
+
+Michigan 97%                                                                                                                         98% Arizona
+                  Michigan 93%                                                                                     95% Arizona
+Georgia 96%                                                                                                                          90% Utah St
+                                    Michigan 89%                                                 91% Arizona
+Akron 91%                                                                                                                         60% High Point
+                  Tennessee 84%                                                                                    94% Gonzaga
+Alabama 91%                                                                                                                         97% Arkansas
+                                                      Michigan 84%             55% Gonzaga
+Virginia 97%                                                                                                                         97% Gonzaga
+                  Iowa St 95%                                                                                     81% Miami FL
+Tennessee 96%                                                                                                                            93% BYU
+                                    Iowa St 74%                                                  91% Gonzaga
+Kentucky 94%                                                                                                                        92% Miami FL
+                  Akron 77%                                                                                       94% Arkansas
+Iowa St 98%                                                                                                                           98% Purdue
+
+
